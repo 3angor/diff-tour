@@ -22,7 +22,8 @@ import (
 
 const usage = `usage:
   tour                      choose a branch and tour it
-  tour <branch>             tour a branch (compared with the default branch)
+  tour <branch>             tour a branch, e.g. feature/x or origin/feature/x
+                            (compared with the default branch)
   tour <commit>             tour a single commit
   tour <base>..<head>       tour a range
   tour <tour.json>          play a tour file
@@ -196,7 +197,7 @@ func run(args []string) error {
 // resolve turns the arguments into the two commits to compare.
 //
 //	a..b / a...b   from the merge base of a up to b
-//	branch name    from the default branch up to that branch
+//	branch name    from the default branch up to that branch (local or remote-tracking)
 //	commit         that single commit (from its parent to the commit)
 func resolve(repo *git.Repo, arg string) (string, string, error) {
 	if base, head, ok := strings.Cut(strings.Replace(arg, "...", "..", 1), ".."); ok {
@@ -207,7 +208,8 @@ func resolve(repo *git.Repo, arg string) (string, string, error) {
 		}
 		return base, head, nil
 	}
-	if repo.RevParse("refs/heads/"+arg) != "" {
+	// A remote-tracking branch (e.g. origin/feature/x, for reviewing someone else's branch) is a branch too
+	if repo.RevParse("refs/heads/"+arg) != "" || repo.RevParse("refs/remotes/"+arg) != "" {
 		base := repo.DefaultBranch()
 		if base == "" {
 			return "", "", fmt.Errorf("%s", i18n.T("err.noBase"))
@@ -224,6 +226,10 @@ func backendFor(llm string) (generate.Backend, error) {
 	switch llm {
 	case "claude-code":
 		return generate.ClaudeCode{}, nil
+	case "codex":
+		return generate.Codex{}, nil
+	case "gemini":
+		return generate.Gemini{}, nil
 	case "":
 		return nil, fmt.Errorf("%s", i18n.T("err.noLLM"))
 	}

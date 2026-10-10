@@ -41,7 +41,7 @@ func TestEveryMessageHasJapanese(t *testing.T) {
 
 // Every message key used in the source code must exist in both the English and Japanese tables (so a raw key never shows up on screen)
 func TestUsedKeysExist(t *testing.T) {
-	re := regexp.MustCompile(`(?:i18n\.T|statusText)\("([a-zA-Z.]+)"|"(setup\.[a-zA-Z]+)(?:[:|"])`)
+	re := regexp.MustCompile(`i18n\.T\("([a-zA-Z.]+)"|"(setup\.[a-zA-Z]+)(?:[:|"])`)
 	err := filepath.WalkDir("../..", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return err

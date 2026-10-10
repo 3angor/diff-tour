@@ -1,11 +1,7 @@
 package ui
 
 import (
-	"net/http"
-	"os"
 	"os/exec"
-	"strings"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -13,68 +9,28 @@ import (
 	"github.com/init-co-jp/diff-tour/internal/text"
 )
 
-// LLMOption is a candidate LLM for generating tours.
+// LLMOption is a candidate LLM for writing tours.
 type LLMOption struct {
 	ID        string
 	Name      string
 	Available bool
-	// Why it can't be used, or "found"
+	// Status is the i18n key for "found" or for why it can't be used
 	Status string
-	// Runs on this machine (code is not sent anywhere)
-	Local bool
 }
 
-// DetectLLMs looks for usable LLMs. Ones that aren't found are returned too, along with what is missing.
+// DetectLLMs looks for the supported LLM CLIs. Ones that aren't installed are returned too, so the screen can say so.
 func DetectLLMs() []LLMOption {
 	command := func(id, name, bin string) LLMOption {
-		_, err := exec.LookPath(bin)
-		if err != nil {
+		if _, err := exec.LookPath(bin); err != nil {
 			return LLMOption{ID: id, Name: name, Status: "setup.notFound"}
 		}
 		return LLMOption{ID: id, Name: name, Available: true, Status: "setup.found"}
 	}
-	apiKey := func(id, name, env string) LLMOption {
-		if os.Getenv(env) == "" {
-			return LLMOption{ID: id, Name: name, Status: "setup.noKey:" + env}
-		}
-		return LLMOption{ID: id, Name: name, Available: true, Status: "setup.found"}
-	}
-	ollama := LLMOption{ID: "ollama", Name: "Ollama", Local: true, Status: "setup.notRunning"}
-	client := http.Client{Timeout: 300 * time.Millisecond}
-	if res, err := client.Get("http://127.0.0.1:11434/api/tags"); err == nil {
-		res.Body.Close()
-		if res.StatusCode == http.StatusOK {
-			ollama.Available, ollama.Status = true, "setup.found"
-		}
-	}
-	options := []LLMOption{
+	return []LLMOption{
 		command("claude-code", "Claude Code", "claude"),
 		command("codex", "Codex CLI", "codex"),
-		apiKey("anthropic-api", "Anthropic API", "ANTHROPIC_API_KEY"),
-		apiKey("openai-api", "OpenAI API", "OPENAI_API_KEY"),
-		ollama,
+		command("gemini", "Gemini CLI", "gemini"),
 	}
-	// For now only Claude Code can generate tours. Others are made unselectable even if found, and the user is told so
-	for i := range options {
-		if options[i].ID != "claude-code" {
-			options[i].Status = options[i].Status + "|setup.unsupported"
-			options[i].Available = false
-		}
-	}
-	return options
-}
-
-// statusText turns a status like "setup.found|setup.unsupported" into a message.
-func statusText(s string) string {
-	var parts []string
-	for _, key := range strings.Split(s, "|") {
-		if env, ok := strings.CutPrefix(key, "setup.noKey:"); ok {
-			parts = append(parts, i18n.T("setup.noKey", env))
-		} else {
-			parts = append(parts, i18n.T(key))
-		}
-	}
-	return strings.Join(parts, " · ")
 }
 
 // Setup is the first-run screen for choosing the language and LLM. The recommended options are preselected, so Enter alone moves on.
@@ -213,15 +169,12 @@ func (s *Setup) View() tea.View {
 		if o.Available {
 			noteStyle = "32"
 		}
-		option(i == s.llm, s.focus == 1, o.Name, statusText(o.Status), noteStyle, o.Available)
+		option(i == s.llm, s.focus == 1, o.Name, i18n.T(o.Status), noteStyle, o.Available)
 	}
 	add(text.Line{{Text: "   ────────────────", Style: "90"}})
-	switch {
-	case s.llm < 0:
+	if s.llm < 0 {
 		add(text.Line{{Text: "   " + i18n.T("setup.none"), Style: "33"}})
-	case s.llms[s.llm].Local:
-		add(text.Line{{Text: "   " + i18n.T("setup.local"), Style: "90"}})
-	default:
+	} else {
 		add(text.Line{{Text: "   " + i18n.T("setup.sendsCode"), Style: "33"}})
 	}
 	add(nil)
