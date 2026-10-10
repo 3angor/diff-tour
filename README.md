@@ -42,10 +42,10 @@ AI can write code that works. It does not teach you *why* the code is written th
 
 `tour` turns a git change into a guided tour you step through with two keys, **→** and **←**. The tour shows what a senior engineer looks at when they read the change:
 
-- what the change does to the behavior of the whole system, not only the lines that changed
-- the existing code it relies on, including files that did not change
-- why a line that looks redundant is there, and what an error handler protects against
-- where a senior would stop and say "wait", asked as a question before the answer is shown
+- **How they read it.** What the change is for, where to spend time, and which files to jump to next, including files that did not change.
+- **What they ask.** Does it keep the promises the old code kept? What happens when something fails, or runs twice? Can it be rolled out and rolled back safely? Who can call it, and with what input? What happens at 100 times the data? Is the next change easier or harder? Would the tests fail if the code broke?
+- **How they judge.** Which findings must be fixed and which are only suggestions or nits, what looks risky but is fine and why, what is done well, and whether the change makes the codebase better overall.
+- **Where they stop and say "wait".** These come as questions, so you can predict the answer before you see it.
 
 The tour is written by an LLM you already use: Claude Code, Codex CLI or Gemini CLI. `tour` is read-only. It never changes your files or your repository.
 
