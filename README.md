@@ -13,10 +13,17 @@ You only need two keys: **→** next and **←** back.
 
 ## Try it
 
-Requires Go 1.27, git, and [Claude Code](https://claude.com/claude-code) (`claude`) signed in.
+Requires git and [Claude Code](https://claude.com/claude-code) (`claude`) signed in.
+
+Download the archive for your OS from [Releases](https://github.com/init-co-jp/diff-tour/releases), and put `tour` on your `PATH`. Or, with Go 1.27 or later:
 
 ```sh
 go install github.com/init-co-jp/diff-tour/cmd/tour@latest
+```
+
+Then:
+
+```sh
 cd your-repo
 tour
 ```

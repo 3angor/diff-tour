@@ -1,2 +1,6 @@
 [tools]
 go = "1.27"
+# Release and demo tooling (not needed to build or test)
+goreleaser = "2"
+vhs = "0.12"
+ttyd = "1.7"

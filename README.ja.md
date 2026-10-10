@@ -13,10 +13,17 @@ AI に頼めば動くコードはできます。でも、なぜそう書いた�
 
 ## 試す
 
-Go 1.27、git、ログイン済みの [Claude Code](https://claude.com/claude-code)（`claude`）が必要です。
+git と、ログイン済みの [Claude Code](https://claude.com/claude-code)（`claude`）が必要です。
+
+[Releases](https://github.com/init-co-jp/diff-tour/releases) から OS に合うアーカイブを落とし、`tour` を `PATH` の通った場所に置いてください。Go 1.27 以上があれば、次の方法でも入ります。
 
 ```sh
 go install github.com/init-co-jp/diff-tour/cmd/tour@latest
+```
+
+そのあと:
+
+```sh
 cd your-repo
 tour
 ```

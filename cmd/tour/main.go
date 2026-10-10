@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -33,7 +34,22 @@ options:
   --dump          print every step to stdout instead of opening the TUI
   --cols, --rows  screen size for --dump (default 100x30)
   --plain         --dump without colors
+  --version       print the version
 `
+
+// version is set by the release build (-ldflags "-X main.version=...").
+var version = ""
+
+// versionString falls back to the module version that go install records.
+func versionString() string {
+	if version != "" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return "dev"
+}
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -76,9 +92,14 @@ func run(args []string) error {
 	plain := fs.Bool("plain", false, "")
 	cols := fs.Int("cols", 100, "")
 	rows := fs.Int("rows", 30, "")
+	showVersion := fs.Bool("version", false, "")
 	positional, err := parse(fs, args)
 	if err != nil {
 		return err
+	}
+	if *showVersion {
+		fmt.Println("tour", versionString())
+		return nil
 	}
 
 	cfg, err := config.Load()
