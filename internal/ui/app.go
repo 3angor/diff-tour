@@ -7,15 +7,15 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/DaiAoki/tour/internal/generate"
-	"github.com/DaiAoki/tour/internal/git"
-	"github.com/DaiAoki/tour/internal/i18n"
-	"github.com/DaiAoki/tour/internal/render"
-	"github.com/DaiAoki/tour/internal/text"
-	"github.com/DaiAoki/tour/internal/tour"
+	"github.com/init-co-jp/diff-tour/internal/generate"
+	"github.com/init-co-jp/diff-tour/internal/git"
+	"github.com/init-co-jp/diff-tour/internal/i18n"
+	"github.com/init-co-jp/diff-tour/internal/render"
+	"github.com/init-co-jp/diff-tour/internal/text"
+	"github.com/init-co-jp/diff-tour/internal/tour"
 )
 
-// Target はツアーにできる変更。
+// Target is a change that can be turned into a tour.
 type Target struct {
 	Base, Head string
 	Label      string
@@ -24,15 +24,15 @@ type Target struct {
 	Committed  int64
 	Cached     bool
 	Key        string
-	// head が作業ツリー（未コミットの変更を含む）
+	// Uncommitted means head is the working tree (including uncommitted changes).
 	Uncommitted bool
 }
 
-// FindTargets は、比べ先のブランチより進んでいるローカルのブランチを、いまいるブランチを先頭にして返す。
+// FindTargets returns the local branches that are ahead of the branch being compared against, with the current branch first.
 func FindTargets(repo *git.Repo, base string, lang i18n.Lang, backend string) []Target {
 	current := repo.CurrentBranch()
 	var targets []Target
-	// 未コミットの変更があれば、それを含めたものを先頭にして選んでおく（AI に書かせた直後の変更は、たいていまだコミットしていない）
+	// If there are uncommitted changes, put a target that includes them first and select it (changes just written by an AI are usually not committed yet).
 	if repo.Dirty() {
 		label := render.RefName(repo, git.Worktree)
 		key := generate.CacheKey(repo, base, git.Worktree, lang, backend)
@@ -95,7 +95,7 @@ type doneMsg struct {
 
 type tickMsg time.Time
 
-// App は、変更を選ぶ → ツアーを作る（保存済みなら読む）→ 再生する、を 1 つの画面の中で進める。
+// App runs pick a change -> generate the tour (or load it if saved) -> play it, all within a single screen.
 type App struct {
 	repo     *git.Repo
 	lang     i18n.Lang
@@ -121,12 +121,12 @@ type App struct {
 	height int
 }
 
-// NewPicker は変更を選ぶ画面から始める。
+// NewPicker starts from the screen for picking a change.
 func NewPicker(repo *git.Repo, base string, lang i18n.Lang, backend generate.Backend) *App {
 	return &App{repo: repo, lang: lang, backend: backend, baseName: base, targets: FindTargets(repo, base, lang, backend.Name())}
 }
 
-// NewGenerating は、変更が決まっている場合に、ツアーを作る画面から始める。
+// NewGenerating starts from the tour generation screen, for when the change is already decided.
 func NewGenerating(repo *git.Repo, base, head string, lang i18n.Lang, backend generate.Backend) *App {
 	a := &App{repo: repo, lang: lang, backend: backend, baseName: base}
 	key := generate.CacheKey(repo, base, head, lang, backend.Name())
@@ -150,7 +150,7 @@ func tick() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
-// start は保存済みのツアーがあれば開き、なければ別の goroutine で作り始める。
+// start opens the saved tour if there is one; otherwise it starts generating one in a separate goroutine.
 func (a *App) start(t Target) tea.Cmd {
 	a.target = t
 	if cached, err := generate.LoadCached(t.Key); err == nil && cached != nil {
@@ -173,7 +173,7 @@ func (a *App) start(t Target) tea.Cmd {
 		tr, stats, err := generate.Generate(ctx, a.backend, req, work, func(p generate.Progress) {
 			select {
 			case ch <- progressMsg(p):
-			default: // 画面の更新が追いつかなければ、途中の出来事は捨ててよい
+			default: // if the screen can't keep up, dropping intermediate events is fine
 			}
 		})
 		if err == nil {

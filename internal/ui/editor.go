@@ -8,11 +8,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/DaiAoki/tour/internal/git"
+	"github.com/init-co-jp/diff-tour/internal/git"
 )
 
-// EditorCommand は「ファイルの何行目を開く」コマンドを、よく使われるエディタに合わせて作る。
-// TOUR_EDITOR に "{file}" と "{line}" を含むコマンドを書けば、それを使う。
+// EditorCommand builds an "open this file at this line" command for commonly used editors.
+// If TOUR_EDITOR is set to a command containing "{file}" and "{line}", that is used instead.
 func EditorCommand(file string, line int) []string {
 	if tmpl := os.Getenv("TOUR_EDITOR"); tmpl != "" {
 		var out []string
@@ -42,9 +42,9 @@ func EditorCommand(file string, line int) []string {
 
 var unsafeRef = regexp.MustCompile(`[^\w.-]`)
 
-// PrepareFile は開くファイルを決める。作業ツリーのファイルがツアーの時点と同じ内容ならそれを返す。
-// 違う場合（別のブランチや PR を見ているとき）は、その時点の内容を読み取り専用のコピーにして返す。
-// どちらの場合も、リポジトリには何も書かない。
+// PrepareFile decides which file to open. If the working-tree file has the same content as at the tour's point in time, it returns that file.
+// Otherwise (when viewing another branch or a PR), it returns a read-only copy of the content at that point.
+// In either case, nothing is written to the repository.
 func PrepareFile(repo *git.Repo, ref, file string) (path string, copied bool, err error) {
 	lines := repo.Show(ref, file)
 	if lines == nil {

@@ -9,26 +9,26 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/DaiAoki/tour/internal/git"
+	"github.com/init-co-jp/diff-tour/internal/git"
 )
 
-// Workspace は LLM に読ませるための作業ディレクトリ。
+// Workspace is the working directory the LLM is given to read.
 //
-//	base/        変更前（分岐点）の全ファイル
-//	head/        変更後の全ファイル
-//	change.diff  base から head への差分
-//	commits.txt  変更に含まれるコミットのメッセージ
-//	uncommitted.diff  （head が作業ツリーのときだけ）まだコミットしていない変更だけの差分
+//	base/        every file before the change (at the fork point)
+//	head/        every file after the change
+//	change.diff  the diff from base to head
+//	commits.txt  messages of the commits in the change
+//	uncommitted.diff  (only when head is the working tree) the diff of just the not-yet-committed changes
 //
-// リポジトリそのものではなく書き出したものを読ませるのは、LLM の道具を
-// このディレクトリの中に閉じ込めるため（git を使わせなくて済み、作業ツリーにも触れない）。
+// The LLM reads an exported copy rather than the repository itself so that its tools
+// stay confined to this directory (it never needs git, and the working tree is never touched).
 type Workspace struct {
 	Dir string
 }
 
 func (w *Workspace) Remove() error { return os.RemoveAll(w.Dir) }
 
-// PrepareWorkspace は dir に作業ディレクトリを作る。リポジトリは読むだけ。
+// PrepareWorkspace creates the working directory in dir. The repository is only read.
 func PrepareWorkspace(repo *git.Repo, base, head, dir string) (*Workspace, error) {
 	if err := os.RemoveAll(dir); err != nil {
 		return nil, err
@@ -44,7 +44,7 @@ func PrepareWorkspace(repo *git.Repo, base, head, dir string) (*Workspace, error
 		"commits.txt": repo.CommitMessages(base, head),
 	}
 	if head == git.Worktree {
-		// どこまでがコミット済みで、どこからが未コミットかを区別できるように
+		// So that what is committed can be told apart from what is not yet committed.
 		files["uncommitted.diff"] = repo.RawDiff("HEAD", git.Worktree)
 	}
 	for name, content := range files {
@@ -77,7 +77,7 @@ func extract(repo *git.Repo, ref, dir string) error {
 			wait()
 			return err
 		}
-		// 書き出し先の外を指すパスは受け付けない
+		// Reject paths that point outside the destination.
 		name := filepath.Clean(h.Name)
 		if filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
 			continue
@@ -101,13 +101,13 @@ func extract(repo *git.Repo, ref, dir string) error {
 			if err != nil {
 				return err
 			}
-			// シンボリックリンクなどは書き出さない（作業ディレクトリの外を読ませないため）
+			// Do not export symlinks and the like (so nothing outside the working directory can be read).
 		}
 	}
 	return wait()
 }
 
-// copyWorktree は作業ツリーの読んでよいファイル（追跡しているものと、無視されていない未追跡のもの）を書き出す。
+// copyWorktree exports the working-tree files that may be read (tracked ones and untracked ones that are not ignored).
 func copyWorktree(repo *git.Repo, dir string) error {
 	for _, f := range repo.ListFiles(git.Worktree, "") {
 		lines := repo.Show(git.Worktree, f)

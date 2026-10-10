@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/DaiAoki/tour/internal/i18n"
+	"github.com/init-co-jp/diff-tour/internal/i18n"
 )
 
 func TestExtractJSON(t *testing.T) {
@@ -29,7 +29,7 @@ func TestParseReportsProblems(t *testing.T) {
 	if _, problems := parse(req, "not json"); len(problems) != 1 {
 		t.Errorf("problems = %v", problems)
 	}
-	// 形式にない項目は、書き間違いとして直させる
+	// Fields not in the format are treated as typos and must be fixed.
 	if _, problems := parse(req, `{"version":1,"title":"x","base":"main","head":"feature","chapters":[],"extra":1}`); len(problems) != 1 || !strings.Contains(problems[0], "extra") {
 		t.Errorf("problems = %v", problems)
 	}

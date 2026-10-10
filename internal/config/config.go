@@ -1,4 +1,4 @@
-// Package config は利用者の設定（言語と LLM）を読み書きする。
+// Package config reads and writes the user's settings (language and LLM).
 package config
 
 import (
@@ -11,11 +11,11 @@ import (
 
 type Config struct {
 	Lang string `json:"lang"`
-	// claude-code / codex / anthropic-api / openai-api / ollama。空なら未設定
+	// claude-code / codex / anthropic-api / openai-api / ollama. Empty means not configured
 	LLM string `json:"llm"`
 }
 
-// Path は設定ファイルの場所。Linux なら ~/.config/tour/config.json（XDG_CONFIG_HOME を尊重する）。
+// Path is the location of the config file. On Linux it is ~/.config/tour/config.json (respecting XDG_CONFIG_HOME).
 func Path() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
@@ -24,7 +24,7 @@ func Path() (string, error) {
 	return filepath.Join(dir, "tour", "config.json"), nil
 }
 
-// Load は設定を読む。まだなければ nil を返す。
+// Load reads the config. It returns nil if there is none yet.
 func Load() (*Config, error) {
 	path, err := Path()
 	if err != nil {

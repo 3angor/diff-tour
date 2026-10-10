@@ -1,4 +1,4 @@
-// Package render は、ツアーの手順を端末 1 画面分の行にする。
+// Package render turns a tour step into one terminal screen's worth of lines.
 package render
 
 import (
@@ -6,14 +6,14 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/DaiAoki/tour/internal/i18n"
-	"github.com/DaiAoki/tour/internal/text"
-	"github.com/DaiAoki/tour/internal/tour"
+	"github.com/init-co-jp/diff-tour/internal/i18n"
+	"github.com/init-co-jp/diff-tour/internal/text"
+	"github.com/init-co-jp/diff-tour/internal/tour"
 )
 
 const (
 	pad = 2
-	// これ以上の幅があれば、コードと説明を左右に並べる
+	// at this width or wider, code and explanation are placed side by side
 	sideBySideMinCols = 110
 )
 
@@ -36,7 +36,7 @@ func spread(left, right text.Line, width int) text.Line {
 	return text.Concat(text.Fit(left, room, ""), right)
 }
 
-// Location は `o` で開く場所。開けるものがなければ nil。
+// Location is the place `o` opens. It is nil if there is nothing to open.
 func Location(step tour.FlatStep, ctx Ctx) *tour.Location {
 	if step.Open != nil {
 		return step.Open
@@ -50,7 +50,7 @@ func Location(step tour.FlatStep, ctx Ctx) *tour.Location {
 			if errMsg != "" {
 				return &tour.Location{File: b.Diff.File, Line: 1}
 			}
-			// 最初に変わった行。削除だけの行には head での行番号がないので、直前の行の番号を使う
+			// The first changed line. Deletion-only lines have no line number in head, so use the number of the preceding line
 			line := 1
 		find:
 			for _, h := range picked {
@@ -80,7 +80,7 @@ func Location(step tour.FlatStep, ctx Ctx) *tour.Location {
 			}
 			sort.Strings(files)
 			sort.Strings(added)
-			// 今回追加したマイグレーションの最後のもの。なければ全体の最後のもの
+			// The last migration added in this change; if none, the last one overall
 			if len(added) > 0 {
 				return &tour.Location{File: added[len(added)-1], Line: 1}
 			}
@@ -92,7 +92,7 @@ func Location(step tour.FlatStep, ctx Ctx) *tour.Location {
 	return nil
 }
 
-// Frame は 1 画面分の行と、スクロールできる最大の量を返す。
+// Frame returns one screen's worth of lines and the maximum scroll amount.
 func Frame(ctx Ctx, steps []tour.FlatStep, index, scroll, cols, rows int, message string) ([]text.Line, int) {
 	step := steps[index]
 	inner := max(20, cols-pad*2)
@@ -116,8 +116,8 @@ func Frame(ctx Ctx, steps []tour.FlatStep, index, scroll, cols, rows int, messag
 		hint = []text.Line{nil, {{Text: i18n.T("think"), Style: "2;33"}}}
 	}
 
-	// 左に置くのは、先頭から続くコードのブロック（なければ最初のコードのブロック）だけ。
-	// それ以外は説明の流れを崩さないよう、元の順番のまま右に置く
+	// Only the code block(s) at the very start (or, if none, the first code block) go on the left.
+	// Everything else goes on the right in its original order, so the flow of the explanation isn't broken
 	var visual, other []tour.Block
 	leading := 0
 	for leading < len(step.Blocks) && step.Blocks[leading].IsVisual() {
@@ -138,7 +138,7 @@ func Frame(ctx Ctx, steps []tour.FlatStep, index, scroll, cols, rows int, messag
 
 	body := append(append([]text.Line{}, title...), nil)
 	if cols >= sideBySideMinCols && len(visual) > 0 && len(other) > 0 {
-		// コードが切れないよう、左はコードの実際の幅に合わせる（全体の 45〜65% の範囲）
+		// Size the left side to the code's actual width so code isn't cut off (within 45-65% of the total)
 		natural := 0
 		for _, l := range stack(visual, 400, ctx) {
 			natural = max(natural, text.TrimRight(l).Width())

@@ -1,4 +1,4 @@
-module github.com/DaiAoki/tour
+module github.com/init-co-jp/diff-tour
 
 go 1.27.2
 

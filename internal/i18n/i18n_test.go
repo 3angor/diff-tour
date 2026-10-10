@@ -16,9 +16,9 @@ func TestDetect(t *testing.T) {
 	}{
 		{"", "ja_JP.UTF-8", JA},
 		{"", "en_US.UTF-8", EN},
-		{"", "fr_FR.UTF-8", EN}, // 対応していない言語は英語
+		{"", "fr_FR.UTF-8", EN}, // unsupported languages fall back to English
 		{"C", "ja_JP.UTF-8", JA},
-		{"en_US.UTF-8", "ja_JP.UTF-8", EN}, // LC_ALL が優先
+		{"en_US.UTF-8", "ja_JP.UTF-8", EN}, // LC_ALL takes precedence
 		{"", "", EN},
 	}
 	for _, c := range cases {
@@ -39,7 +39,7 @@ func TestEveryMessageHasJapanese(t *testing.T) {
 	}
 }
 
-// ソースコードで使っている文言のキーが、すべて英語と日本語の表にあること（キーがそのまま画面に出るのを防ぐ）
+// Every message key used in the source code must exist in both the English and Japanese tables (so a raw key never shows up on screen)
 func TestUsedKeysExist(t *testing.T) {
 	re := regexp.MustCompile(`(?:i18n\.T|statusText)\("([a-zA-Z.]+)"|"(setup\.[a-zA-Z]+)(?:[:|"])`)
 	err := filepath.WalkDir("../..", func(path string, d fs.DirEntry, err error) error {

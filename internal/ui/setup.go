@@ -9,22 +9,22 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/DaiAoki/tour/internal/i18n"
-	"github.com/DaiAoki/tour/internal/text"
+	"github.com/init-co-jp/diff-tour/internal/i18n"
+	"github.com/init-co-jp/diff-tour/internal/text"
 )
 
-// LLMOption はツアーを作る LLM の候補。
+// LLMOption is a candidate LLM for generating tours.
 type LLMOption struct {
 	ID        string
 	Name      string
 	Available bool
-	// 使えない理由、または「見つかりました」
+	// Why it can't be used, or "found"
 	Status string
-	// このマシンの中で動く（コードが外に送られない）
+	// Runs on this machine (code is not sent anywhere)
 	Local bool
 }
 
-// DetectLLMs は使える LLM を探す。見つからないものも、何が足りないかを添えて返す。
+// DetectLLMs looks for usable LLMs. Ones that aren't found are returned too, along with what is missing.
 func DetectLLMs() []LLMOption {
 	command := func(id, name, bin string) LLMOption {
 		_, err := exec.LookPath(bin)
@@ -54,7 +54,7 @@ func DetectLLMs() []LLMOption {
 		apiKey("openai-api", "OpenAI API", "OPENAI_API_KEY"),
 		ollama,
 	}
-	// いまツアーを作れるのは Claude Code だけ。ほかは見つかっても選べないようにして、そう伝える
+	// For now only Claude Code can generate tours. Others are made unselectable even if found, and the user is told so
 	for i := range options {
 		if options[i].ID != "claude-code" {
 			options[i].Status = options[i].Status + "|setup.unsupported"
@@ -64,7 +64,7 @@ func DetectLLMs() []LLMOption {
 	return options
 }
 
-// statusText は "setup.found|setup.unsupported" のような状態を文言にする。
+// statusText turns a status like "setup.found|setup.unsupported" into a message.
 func statusText(s string) string {
 	var parts []string
 	for _, key := range strings.Split(s, "|") {
@@ -77,13 +77,13 @@ func statusText(s string) string {
 	return strings.Join(parts, " · ")
 }
 
-// Setup は初回に言語と LLM を選ぶ画面。推奨が選ばれた状態で、Enter だけで進める。
+// Setup is the first-run screen for choosing the language and LLM. The recommended options are preselected, so Enter alone moves on.
 type Setup struct {
 	detectedFrom string
 	lang         int
 	llms         []LLMOption
-	llm          int // -1 は「使えるものがない」
-	focus        int // 0: 言語、1: LLM
+	llm          int // -1 means nothing is usable
+	focus        int // 0: language, 1: LLM
 	width        int
 	Done         bool
 }
@@ -115,7 +115,7 @@ func (s *Setup) LLM() string {
 
 func (s *Setup) Init() tea.Cmd { return nil }
 
-// moveLLM は使えない候補を飛ばして選択を動かす。
+// moveLLM moves the selection, skipping unusable candidates.
 func (s *Setup) moveLLM(delta int) {
 	for i := s.llm + delta; i >= 0 && i < len(s.llms); i += delta {
 		if s.llms[i].Available {
@@ -155,7 +155,7 @@ func (s *Setup) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return s, tea.Quit
 		}
-		// 言語を選び替えたら、この画面の文言もその場で切り替える
+		// when the language is changed, switch this screen's messages on the spot
 		i18n.Set(s.Lang())
 	}
 	return s, nil

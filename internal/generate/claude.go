@@ -11,9 +11,9 @@ import (
 	"strings"
 )
 
-// Event は生成中に起きたこと（画面に流す用）。
+// Event is something that happened during generation (for streaming to the screen).
 type Event struct {
-	Kind   string // "read"、"search"
+	Kind   string // "read", "search"
 	Detail string
 }
 
@@ -22,26 +22,26 @@ type Result struct {
 	CostUSD float64
 }
 
-// Backend はツアーを書く LLM。
+// Backend is the LLM that writes the tour.
 type Backend interface {
 	Name() string
-	// Run は dir を作業ディレクトリにして prompt を渡し、最後の返答を返す。
+	// Run passes prompt with dir as the working directory and returns the final reply.
 	Run(ctx context.Context, dir, prompt string, events func(Event)) (Result, error)
 }
 
-// ClaudeCode は Claude Code の CLI（claude -p）を、読み取りの道具だけに絞って動かす。
+// ClaudeCode runs the Claude Code CLI (claude -p) restricted to read-only tools.
 type ClaudeCode struct {
 	Bin string
 }
 
 func (c ClaudeCode) Name() string { return "Claude Code" }
 
-// claudeArgs は読み取り専用で動かすためのフラグ。
+// claudeArgs are the flags for running read-only.
 //
-//	--restricted                コマンドを実行する道具と WebFetch を外し、ファイルの道具を作業ディレクトリに閉じ込める
-//	--strict-mcp-config         MCP サーバーを読み込まない
-//	--tools Read,Grep,Glob      使える道具を読み取りの 3 つだけにする
-//	--permission-mode dontAsk   確認が必要な操作は、聞かずに拒否する
+//	--restricted                removes the command-execution tools and WebFetch, and confines file tools to the working directory
+//	--strict-mcp-config         loads no MCP servers
+//	--tools Read,Grep,Glob      limits the available tools to the three read-only ones
+//	--permission-mode dontAsk   denies, without asking, any operation that needs confirmation
 func claudeArgs(prompt string) []string {
 	return []string{
 		"-p",

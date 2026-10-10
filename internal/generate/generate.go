@@ -1,4 +1,4 @@
-// Package generate は LLM にツアーを書かせる。
+// Package generate has an LLM write tours.
 package generate
 
 import (
@@ -15,19 +15,19 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/DaiAoki/tour/internal/git"
-	"github.com/DaiAoki/tour/internal/i18n"
-	"github.com/DaiAoki/tour/internal/render"
-	"github.com/DaiAoki/tour/internal/tour"
+	"github.com/init-co-jp/diff-tour/internal/git"
+	"github.com/init-co-jp/diff-tour/internal/i18n"
+	"github.com/init-co-jp/diff-tour/internal/render"
+	"github.com/init-co-jp/diff-tour/internal/tour"
 )
 
 //go:embed prompts/*.md
 var prompts embed.FS
 
-// PromptVersion はプロンプトを変えたら上げる。保存済みのツアーを作り直させるため。
+// PromptVersion must be bumped whenever the prompts change, so saved tours get regenerated.
 const PromptVersion = "v1"
 
-// MaxRepairs は、検証で誤りが見つかったときに LLM に直させる回数の上限。
+// MaxRepairs is the maximum number of times the LLM is asked to fix errors found by validation.
 const MaxRepairs = 2
 
 type Request struct {
@@ -37,10 +37,10 @@ type Request struct {
 	Lang i18n.Lang
 }
 
-// Progress は生成の進み具合。
+// Progress is how far generation has got.
 type Progress struct {
 	Event  *Event
-	Phase  string // "reading"、"repairing"
+	Phase  string // "reading", "repairing"
 	Repair int
 }
 
@@ -80,10 +80,10 @@ func buildPrompt(req Request) (string, error) {
 	return b.String(), nil
 }
 
-// separator は、下調べとツアーの JSON の区切り（prompts/output-C.md で指示している）。
+// separator divides the research notes from the tour JSON (as instructed in prompts/output-C.md).
 const separator = "=== ツアー JSON ==="
 
-// extractJSON は返答から JSON の部分を取り出す（下調べ、```json の囲み、前置きがあっても外す）。
+// extractJSON pulls the JSON out of a reply (stripping research notes, ```json fences and any preamble).
 func extractJSON(text string) []byte {
 	if _, after, ok := strings.Cut(text, separator); ok {
 		text = after
@@ -95,7 +95,7 @@ func extractJSON(text string) []byte {
 	return []byte(text[start : end+1])
 }
 
-// parse は返答をツアーにし、形式と、指しているファイル・行の実在を確かめる。問題があれば一覧で返す。
+// parse turns a reply into a tour and checks its format and that the referenced files and lines exist. Problems are returned as a list.
 func parse(req Request, text string) (*tour.Tour, []string) {
 	raw := extractJSON(text)
 	if raw == nil {
@@ -107,7 +107,7 @@ func parse(req Request, text string) (*tour.Tour, []string) {
 	if err := dec.Decode(&t); err != nil {
 		return nil, []string{"invalid JSON: " + err.Error()}
 	}
-	// 名前の書き間違いで別のコミットを読まないよう、base と head は依頼したものに揃える
+	// Pin base and head to what was requested, so a misspelled name cannot make it read a different commit.
 	t.Base, t.Head = req.Base, req.Head
 	if err := t.Validate(); err != nil {
 		return &t, []string{err.Error()}
@@ -118,12 +118,12 @@ func parse(req Request, text string) (*tour.Tour, []string) {
 func readPrompt(name string) string {
 	b, err := prompts.ReadFile("prompts/" + name)
 	if err != nil {
-		panic(err) // 埋め込んだファイルなので、ないことはない
+		panic(err) // it's an embedded file, so it can't be missing
 	}
 	return string(b)
 }
 
-// repairPrompt は検証で見つかった誤りだけを直させる。直す前の JSON は作業ディレクトリの draft.txt に置く。
+// repairPrompt asks for only the errors found by validation to be fixed. The JSON before fixing is placed in draft.txt in the working directory.
 func repairPrompt(problems []string) string {
 	return strings.Join([]string{
 		readPrompt("fix.md"),
@@ -133,7 +133,7 @@ func repairPrompt(problems []string) string {
 	}, "\n\n")
 }
 
-// Generate はツアーを書かせる。検証で問題があれば、MaxRepairs 回まで直させる。
+// Generate has the tour written. If validation finds problems, it asks for fixes up to MaxRepairs times.
 func Generate(ctx context.Context, backend Backend, req Request, workDir string, progress func(Progress)) (*tour.Tour, Stats, error) {
 	var stats Stats
 	ws, err := PrepareWorkspace(req.Repo, req.Base, req.Head, workDir)
@@ -153,7 +153,7 @@ func Generate(ctx context.Context, backend Backend, req Request, workDir string,
 	if err != nil {
 		return nil, stats, err
 	}
-	// 返答に JSON が全くない（途中で止まった、など）なら、直させるのではなく 1 回だけ作り直す
+	// If the reply has no JSON at all (e.g. it stopped midway), regenerate once instead of asking for a fix.
 	if extractJSON(res.Text) == nil {
 		res, err = backend.Run(ctx, ws.Dir, prompt, onEvent)
 		stats.CostUSD += res.CostUSD
@@ -186,14 +186,14 @@ func Generate(ctx context.Context, backend Backend, req Request, workDir string,
 	}
 }
 
-// InvalidTourError は、直させても形式や指定の誤りが残ったことを表す。
+// InvalidTourError reports that format or reference errors remained even after asking for fixes.
 type InvalidTourError struct{ Problems []string }
 
 func (e *InvalidTourError) Error() string {
 	return "the generated tour is still invalid: " + strings.Join(e.Problems, "; ")
 }
 
-// CacheKey は、同じ変更・同じ言語・同じプロンプト・同じ LLM なら同じになる。
+// CacheKey is the same for the same change, language, prompts and LLM.
 func CacheKey(repo *git.Repo, base, head string, lang i18n.Lang, backend string) string {
 	h := sha256.New()
 	for _, s := range []string{repo.MergeBase(base, head), repo.RevParse(head), string(lang), PromptVersion, backend} {
@@ -211,7 +211,7 @@ func cacheDir() (string, error) {
 	return filepath.Join(dir, "tour"), nil
 }
 
-// CachePath は保存したツアーの場所。
+// CachePath is where a saved tour is stored.
 func CachePath(key string) (string, error) {
 	dir, err := cacheDir()
 	if err != nil {
@@ -220,7 +220,7 @@ func CachePath(key string) (string, error) {
 	return filepath.Join(dir, "tours", key+".json"), nil
 }
 
-// WorkDir は作業ディレクトリの場所（生成が終われば消す）。
+// WorkDir is where the working directory lives (removed once generation finishes).
 func WorkDir(key string) (string, error) {
 	dir, err := cacheDir()
 	if err != nil {
@@ -229,7 +229,7 @@ func WorkDir(key string) (string, error) {
 	return filepath.Join(dir, "work", key), nil
 }
 
-// LoadCached は保存したツアーを読む。なければ nil。
+// LoadCached reads a saved tour, or returns nil if there is none.
 func LoadCached(key string) (*tour.Tour, error) {
 	path, err := CachePath(key)
 	if err != nil {

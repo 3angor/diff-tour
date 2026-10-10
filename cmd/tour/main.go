@@ -1,4 +1,4 @@
-// tour は、git の変更をシニアエンジニアの頭の中を追体験するツアーとして見せる。
+// tour presents git changes as a tour that lets you relive what went through a senior engineer's head.
 package main
 
 import (
@@ -10,13 +10,13 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/DaiAoki/tour/internal/config"
-	"github.com/DaiAoki/tour/internal/generate"
-	"github.com/DaiAoki/tour/internal/git"
-	"github.com/DaiAoki/tour/internal/i18n"
-	"github.com/DaiAoki/tour/internal/render"
-	"github.com/DaiAoki/tour/internal/tour"
-	"github.com/DaiAoki/tour/internal/ui"
+	"github.com/init-co-jp/diff-tour/internal/config"
+	"github.com/init-co-jp/diff-tour/internal/generate"
+	"github.com/init-co-jp/diff-tour/internal/git"
+	"github.com/init-co-jp/diff-tour/internal/i18n"
+	"github.com/init-co-jp/diff-tour/internal/render"
+	"github.com/init-co-jp/diff-tour/internal/tour"
+	"github.com/init-co-jp/diff-tour/internal/ui"
 )
 
 const usage = `usage:
@@ -52,7 +52,7 @@ func isTerminal() bool {
 	return true
 }
 
-// parse はフラグと位置引数が混ざっていても読めるようにする（Go の flag は最初の位置引数で止まるため）。
+// parse can read flags even when they are mixed with positional arguments (Go's flag package stops at the first positional argument).
 func parse(fs *flag.FlagSet, args []string) ([]string, error) {
 	var positional []string
 	for {
@@ -113,7 +113,7 @@ func run(args []string) error {
 	}
 	repo := git.Open(dir)
 
-	// ツアーのファイルを再生する
+	// Play a tour file
 	if len(positional) == 1 && strings.HasSuffix(positional[0], ".json") {
 		t, err := tour.Load(positional[0])
 		if err != nil {
@@ -142,7 +142,7 @@ func run(args []string) error {
 			return err
 		}
 		if cfg, _ = config.Load(); cfg == nil {
-			return nil // 初期設定の途中で終了した
+			return nil // quit in the middle of the initial setup
 		}
 		if *langFlag == "" {
 			lang, _ = i18n.Parse(cfg.Lang)
@@ -172,11 +172,11 @@ func run(args []string) error {
 	return err
 }
 
-// resolve は引数を、比べる 2 つのコミットにする。
+// resolve turns the arguments into the two commits to compare.
 //
-//	a..b / a...b   a の分岐点から b まで
-//	ブランチ名     既定のブランチから、そのブランチまで
-//	コミット       そのコミット 1 つ（親から、そのコミットまで）
+//	a..b / a...b   from the merge base of a up to b
+//	branch name    from the default branch up to that branch
+//	commit         that single commit (from its parent to the commit)
 func resolve(repo *git.Repo, arg string) (string, string, error) {
 	if base, head, ok := strings.Cut(strings.Replace(arg, "...", "..", 1), ".."); ok {
 		for _, r := range []string{base, head} {

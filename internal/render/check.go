@@ -4,11 +4,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/DaiAoki/tour/internal/schema"
+	"github.com/init-co-jp/diff-tour/internal/schema"
 )
 
-// Check は、ツアーが指しているファイル・行・ハンク・スキーマが実在するかを確かめる。
-// 生成したツアーを LLM に直させるときに、そのまま渡せるよう英語で書く。
+// Check verifies that the files, lines, hunks and schemas a tour points to actually exist.
+// Messages are in English so they can be passed as-is when asking the LLM to fix a generated tour.
 func Check(ctx Ctx) []string {
 	var problems []string
 	add := func(step int, title, format string, args ...any) {

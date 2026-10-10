@@ -10,18 +10,18 @@ import (
 	"strings"
 )
 
-// Worktree は「作業ツリー（未コミットの変更を含む）」を表す特別な参照。
-// head にこれを指定すると、コミットではなく、いまのファイルを読む。
-// 読むのは git が追跡しているファイルと、無視されていない未追跡のファイルだけ（.gitignore にある .env などは読まない）。
+// Worktree is a special ref meaning "the working tree (including uncommitted changes)".
+// Passing it as head reads the current files instead of a commit.
+// Only files git tracks and untracked files that are not ignored are read (an .env listed in .gitignore is not).
 const Worktree = "WORKTREE"
 
-// Dirty は未コミットの変更（未追跡のファイルを含む）があるかどうか。
+// Dirty reports whether there are uncommitted changes (including untracked files).
 func (r *Repo) Dirty() bool {
 	out := r.run("status", "--porcelain", "--untracked-files=normal")
 	return out != nil && strings.TrimSpace(*out) != ""
 }
 
-// worktreeFiles は作業ツリーで読んでよいファイルの一覧。
+// worktreeFiles lists the files in the working tree that may be read.
 func (r *Repo) worktreeFiles() map[string]bool {
 	out := r.run("ls-files", "-z", "--cached", "--others", "--exclude-standard")
 	files := map[string]bool{}
@@ -32,7 +32,7 @@ func (r *Repo) worktreeFiles() map[string]bool {
 		if f == "" {
 			continue
 		}
-		// 削除したがまだコミットしていないファイルは、一覧に残っていても読めない
+		// A file deleted but not yet committed may still be listed, yet cannot be read.
 		if info, err := os.Lstat(filepath.Join(r.Dir, f)); err == nil && info.Mode().IsRegular() {
 			files[f] = true
 		}
@@ -59,12 +59,12 @@ func (r *Repo) showWorktree(file string) []string {
 	return strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
 }
 
-// untrackedDiff は未追跡のファイルを「新しく足したファイル」として差分にする。
+// untrackedDiff renders untracked files as a diff of newly added files.
 func (r *Repo) untrackedDiff(file string) string {
 	cmd := exec.Command("git", "-C", r.Dir, "--no-pager", "diff", "--no-color", "--no-ext-diff", "-U3", "--no-index", "--", os.DevNull, file)
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
 	out, err := cmd.Output()
-	// --no-index は、違いがあると終了コード 1 を返す
+	// --no-index exits with status 1 when there are differences.
 	var exit *exec.ExitError
 	if err != nil && !(errors.As(err, &exit) && exit.ExitCode() == 1) {
 		return ""
@@ -91,7 +91,7 @@ func (r *Repo) worktreeDiff(base string, file ...string) string {
 	return b.String()
 }
 
-// worktreeID は作業ツリーの中身から決まる識別子（保存したツアーを使い回してよいかの判断に使う）。
+// worktreeID is an identifier derived from the working tree's contents (used to decide whether a saved tour can be reused).
 func (r *Repo) worktreeID() string {
 	h := sha256.New()
 	h.Write([]byte(r.RevParse("HEAD")))
@@ -99,7 +99,7 @@ func (r *Repo) worktreeID() string {
 	return "worktree-" + hex.EncodeToString(h.Sum(nil))[:16]
 }
 
-// worktreeStat は差分の文字列から、変わったファイルの数と行数を数える。
+// worktreeStat counts the changed files and lines in a diff string.
 func worktreeStat(diff string) Stat {
 	var s Stat
 	for _, l := range strings.Split(diff, "\n") {

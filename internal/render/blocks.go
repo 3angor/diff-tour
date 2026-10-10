@@ -7,23 +7,23 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/DaiAoki/tour/internal/git"
-	"github.com/DaiAoki/tour/internal/highlight"
-	"github.com/DaiAoki/tour/internal/i18n"
-	"github.com/DaiAoki/tour/internal/schema"
-	"github.com/DaiAoki/tour/internal/text"
-	"github.com/DaiAoki/tour/internal/tour"
+	"github.com/init-co-jp/diff-tour/internal/git"
+	"github.com/init-co-jp/diff-tour/internal/highlight"
+	"github.com/init-co-jp/diff-tour/internal/i18n"
+	"github.com/init-co-jp/diff-tour/internal/schema"
+	"github.com/init-co-jp/diff-tour/internal/text"
+	"github.com/init-co-jp/diff-tour/internal/tour"
 )
 
-// Ctx は描画に必要なもの。
+// Ctx holds what rendering needs.
 type Ctx struct {
 	Tour *tour.Tour
 	Repo *git.Repo
 }
 
-// Ref は "base" / "head" を、読むべきコミットにする。
-// "base" は Tour.Base の先端ではなく、head との分岐点。差分も分岐点と比べているので、それと揃える。
-// 分岐のあとで base のブランチが進んでいても、変更前のコードを正しく見せられる。
+// Ref turns "base" / "head" into the commit to read.
+// "base" is not the tip of Tour.Base but its merge base with head. The diff is also taken against the merge base, so this matches it.
+// That way the pre-change code is shown correctly even if the base branch has moved on since the branch point.
 func (c Ctx) Ref(at string) string {
 	if at == "base" {
 		return c.Repo.MergeBase(c.Tour.Base, c.Tour.Head)
@@ -179,7 +179,7 @@ func plainWidth(s string) int {
 	return text.Width(strings.NewReplacer("**", "", "`", "").Replace(s))
 }
 
-// columnWidths は列の幅を決める。入りきらなければ、一番広い列から削る。
+// columnWidths decides the column widths. If they don't fit, it shrinks the widest column first.
 func columnWidths(head []string, rows [][]string, avail int) []int {
 	widths := make([]int, len(head))
 	for i, h := range head {
@@ -249,7 +249,7 @@ type boxRow struct {
 	marker text.Span
 }
 
-// boxTable は罫線で囲んだ表。データベースのテーブルや行を見せるときに使う。
+// boxTable is a table framed with box-drawing lines. It is used to show database tables and rows.
 func boxTable(head []string, headStyles []string, rows []boxRow, width int) []text.Line {
 	n := len(head)
 	cells := make([][]string, len(rows))
@@ -452,7 +452,7 @@ func renderRows(r *tour.Rows, width int) []text.Line {
 	return out
 }
 
-// RefName は画面に出す参照の名前。作業ツリーは「ブランチ名 + 未コミットの変更」と書く。
+// RefName is the ref name shown on screen. The working tree is written as "branch name + uncommitted changes".
 func RefName(repo *git.Repo, ref string) string {
 	if ref != git.Worktree {
 		return ref
@@ -488,7 +488,7 @@ func basisLabel(b tour.Basis) (string, string) {
 	}
 }
 
-// Block は 1 つのブロックを幅 width で描く。
+// Block renders a single block at width width.
 func Block(b tour.Block, width int, ctx Ctx) []text.Line {
 	switch {
 	case b.P != nil:

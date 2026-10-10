@@ -1,5 +1,5 @@
-// Package schema は、マイグレーションをメモリ上の SQLite に当てて、ある時点のスキーマを取り出す。
-// リポジトリの中身は読むだけで、ファイルには何も書かない。
+// Package schema applies migrations to an in-memory SQLite database to extract the schema at a given revision.
+// It only reads the repository's contents and writes nothing to files.
 package schema
 
 import (
@@ -11,13 +11,13 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/DaiAoki/tour/internal/git"
+	"github.com/init-co-jp/diff-tour/internal/git"
 )
 
 type Column struct {
 	Name string
 	Type string
-	// 型より後ろの定義（NOT NULL・DEFAULT・CHECK・REFERENCES など）
+	// The definition after the type (NOT NULL, DEFAULT, CHECK, REFERENCES, etc.).
 	Constraints string
 }
 
@@ -35,12 +35,12 @@ type Table struct {
 
 type Schema map[string]*Table
 
-// UnsafeError は、メモリ上の DB の外にファイルを作れてしまう文を含むマイグレーション。
+// UnsafeError is a migration containing a statement that could create files outside the in-memory DB.
 type UnsafeError struct{ File string }
 
 func (e *UnsafeError) Error() string { return "unsafe statement in " + e.File }
 
-// MigrationError はマイグレーションを当てられなかったことを表す。
+// MigrationError reports that a migration could not be applied.
 type MigrationError struct {
 	File string
 	Err  error
@@ -64,7 +64,7 @@ func Load(repo *git.Repo, ref, dir string) (Schema, error) {
 		return nil, err
 	}
 	defer db.Close()
-	// :memory: は接続ごとに別の DB になるので、接続を 1 つに固定する
+	// :memory: gives each connection its own DB, so pin the pool to a single connection.
 	db.SetMaxOpenConns(1)
 
 	for _, f := range files {
@@ -129,7 +129,7 @@ func Load(repo *git.Repo, ref, dir string) (Schema, error) {
 				idx.Close()
 				return nil, err
 			}
-			// 主キーのために自動で作られる索引は、列の定義を見ればわかるので省く
+			// Skip indexes created automatically for primary keys; the column definitions already show them.
 			if origin == "pk" {
 				continue
 			}
@@ -168,8 +168,8 @@ var (
 	colRe     = regexp.MustCompile("^[\"`\\[]?(\\w+)[\"`\\]]?\\s*(.*)$")
 )
 
-// columnDefs は CREATE TABLE 文を列ごとの定義に分ける（コメントを除き、括弧の中のカンマでは区切らない）。
-// SQLite は ALTER TABLE ADD COLUMN の内容も CREATE TABLE 文に書き足して保存するので、追加した列もここで拾える。
+// columnDefs splits a CREATE TABLE statement into per-column definitions (dropping comments and not splitting on commas inside parentheses).
+// SQLite saves ALTER TABLE ADD COLUMN by appending to the stored CREATE TABLE statement, so added columns are picked up here too.
 func columnDefs(sql string) map[string]string {
 	start, end := strings.Index(sql, "("), strings.LastIndex(sql, ")")
 	defs := map[string]string{}
@@ -236,7 +236,7 @@ type TableDiff struct {
 	Indexes []IndexDiff
 }
 
-// DiffTable は変更前と変更後のテーブルを比べる。どちらかが nil なら、追加か削除。
+// DiffTable compares a table before and after the change. If either is nil, the table was added or removed.
 func DiffTable(before, after *Table) TableDiff {
 	d := TableDiff{}
 	switch {

@@ -1,4 +1,4 @@
-// Package i18n は画面の文言を言語ごとに持つ。ツアーの本文はツアーのデータの言語のまま表示する。
+// Package i18n holds the UI messages for each language. Tour content is shown in the language of the tour data as is.
 package i18n
 
 import (
@@ -14,7 +14,7 @@ const (
 	JA Lang = "ja"
 )
 
-// Langs は対応している言語。選択肢の並び順でもある。
+// Langs lists the supported languages. It is also the order of the choices.
 var Langs = []Lang{EN, JA}
 
 func (l Lang) Name() string {
@@ -41,8 +41,8 @@ func Set(l Lang) { current = l }
 
 func Current() Lang { return current }
 
-// Detect は端末の言語設定（LC_ALL → LC_MESSAGES → LANG）から言語を選ぶ。
-// 対応していなければ英語にする。どの変数から読んだかも返す。
+// Detect picks a language from the terminal's locale settings (LC_ALL -> LC_MESSAGES -> LANG).
+// If the language isn't supported, it uses English. It also returns which variable it read from.
 func Detect() (Lang, string) {
 	for _, key := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
 		v := os.Getenv(key)
@@ -59,7 +59,7 @@ func Detect() (Lang, string) {
 	return EN, ""
 }
 
-// T は現在の言語の文言を返す。その言語になければ英語を使う。
+// T returns the message for the current language, falling back to English if that language lacks it.
 func T(key string, args ...any) string {
 	m, ok := messages[current][key]
 	if !ok {

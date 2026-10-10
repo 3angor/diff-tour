@@ -1,4 +1,6 @@
-# tour
+# diff-tour
+
+Walk through a diff the way a senior engineer reads it.
 
 **English** | [日本語](README.ja.md)
 
@@ -14,7 +16,7 @@ You only need two keys: **→** next and **←** back.
 Requires Go 1.27, git, and [Claude Code](https://claude.com/claude-code) (`claude`) signed in.
 
 ```sh
-go install github.com/DaiAoki/tour/cmd/tour@latest
+go install github.com/init-co-jp/diff-tour/cmd/tour@latest
 cd your-repo
 tour
 ```
@@ -66,3 +68,7 @@ go run ./cmd/tour tours/coupons.json --repo path/to/repo --dump --cols 140 --row
 ```
 
 `--dump` prints every step at a fixed screen size, which is handy for checking layouts without a terminal.
+
+## License
+
+[MIT](LICENSE)

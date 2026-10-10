@@ -1,4 +1,4 @@
-// Package highlight は chroma でコードを色分けし、行ごとの text.Line にする。
+// Package highlight colorizes code with chroma and turns it into one text.Line per line.
 package highlight
 
 import (
@@ -8,7 +8,7 @@ import (
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/lexers"
 
-	"github.com/DaiAoki/tour/internal/text"
+	"github.com/init-co-jp/diff-tour/internal/text"
 )
 
 const (
@@ -49,7 +49,7 @@ func styleFor(t chroma.Token) string {
 	case t.Type.InSubCategory(chroma.LiteralNumber):
 		return styleNumber
 	case t.Type.InCategory(chroma.Name):
-		// 大文字で始まる名前は型やクラスであることが多い
+		// names starting with an uppercase letter are often types or classes
 		if r := []rune(t.Value); len(r) > 0 && unicode.IsUpper(r[0]) {
 			return styleType
 		}
@@ -57,8 +57,8 @@ func styleFor(t chroma.Token) string {
 	return ""
 }
 
-// Lines は src を色分けする。言語は lang、なければファイル名、それもなければ中身から推測する。
-// 複数行のコメントなどが正しく色分けされるよう、表示しない行も含めてまとめて渡す。
+// Lines colorizes src. The language is lang; if empty, it is guessed from the file name, and failing that, from the content.
+// The whole source, including lines that won't be shown, is passed at once so multi-line comments and the like are colored correctly.
 func Lines(filename, lang string, src []string) []text.Line {
 	for i, s := range src {
 		src[i] = strings.ReplaceAll(s, "\t", "  ")

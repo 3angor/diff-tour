@@ -1,4 +1,4 @@
-// Package tour はツアーのデータ形式を定める。
+// Package tour defines the tour data format.
 package tour
 
 import (
@@ -7,43 +7,43 @@ import (
 	"os"
 )
 
-// Version は、このツールが読めるツアーの形式の版。
+// Version is the tour format version this tool can read.
 const Version = 1
 
-// Basis は説明の根拠。
+// Basis is the grounds for an explanation.
 type Basis string
 
 const (
-	Fact     Basis = "fact"     // 確かめた（コード・テスト・コミットメッセージで裏付けがある）
-	Inferred Basis = "inferred" // コードの構造から読み取れる
-	Opinion  Basis = "opinion"  // シニアの見方（一般論。このリポジトリでは確かめていない）
+	Fact     Basis = "fact"     // verified (backed by code, tests or commit messages)
+	Inferred Basis = "inferred" // can be read from the structure of the code
+	Opinion  Basis = "opinion"  // a senior's view (general wisdom, not verified in this repository)
 )
 
 type Location struct {
 	File string `json:"file"`
 	Line int    `json:"line"`
-	// どの時点のコードか。"base" か "head"（既定）
+	// Which revision of the code: "base" or "head" (default).
 	At string `json:"at,omitempty"`
 }
 
 type CodeRef struct {
 	File string `json:"file"`
 	At   string `json:"at,omitempty"`
-	// 強調する行 [開始, 終了]
+	// Lines to highlight [start, end].
 	Lines [2]int `json:"lines"`
-	// 表示する範囲。省略時は強調する行の前後 2 行
+	// Range to display. Defaults to 2 lines around the highlighted lines.
 	Show *[2]int `json:"show,omitempty"`
-	// 「変更なし」などの補足
+	// A side note such as "unchanged".
 	Note string `json:"note,omitempty"`
 }
 
 type DiffRef struct {
 	File string `json:"file"`
-	// 見せるハンクの番号（0 始まり）。省略時はすべて
+	// Indexes of the hunks to show (0-based). Defaults to all.
 	Hunks []int `json:"hunks,omitempty"`
 }
 
-// Snippet はリポジトリにないコード。Label でそれを必ず示す。
+// Snippet is code that is not in the repository. Label must always say so.
 type Snippet struct {
 	Label string `json:"label"`
 	Lang  string `json:"lang,omitempty"`
@@ -51,21 +51,21 @@ type Snippet struct {
 }
 
 type SchemaRef struct {
-	// マイグレーションの SQL があるディレクトリ（ファイル名の順に当てる）
+	// Directory holding the migration SQL (applied in file-name order).
 	Migrations string `json:"migrations"`
-	// 見せるテーブル。省略時は変更のあったテーブルすべて
+	// Tables to show. Defaults to every table that changed.
 	Tables []string `json:"tables,omitempty"`
-	// 強調する列（"テーブル.列"）
+	// Columns to highlight ("table.column").
 	Focus []string `json:"focus,omitempty"`
 }
 
 type Rows struct {
-	// 表の出どころを示す短い札。省略時は「例」（説明用に作ったデータ）
+	// A short tag showing where the table came from. Defaults to "example" (data made up for the explanation).
 	Tag   string     `json:"tag,omitempty"`
 	Label string     `json:"label"`
 	Head  []string   `json:"head"`
 	Data  [][]string `json:"data"`
-	// 今回の変更で増えた列
+	// Columns added by this change.
 	Added []string `json:"added,omitempty"`
 }
 
@@ -74,7 +74,7 @@ type Table struct {
 	Rows [][]string `json:"rows"`
 }
 
-// Block は手順の中の 1 つの部品。ちょうど 1 種類の項目だけを持つ。
+// Block is one part of a step. It holds exactly one kind of item.
 type Block struct {
 	P       *string    `json:"p,omitempty"`
 	Basis   Basis      `json:"basis,omitempty"`
@@ -90,7 +90,7 @@ type Block struct {
 	Target  bool       `json:"target,omitempty"`
 }
 
-// IsVisual は、コードやデータのように左側に並べるブロックかどうか。
+// IsVisual reports whether the block is laid out on the left, like code or data.
 func (b Block) IsVisual() bool {
 	return b.Code != nil || b.Diff != nil || b.Snippet != nil || b.Schema != nil || b.Rows != nil
 }
@@ -108,9 +108,9 @@ func (b Block) kinds() int {
 
 type Step struct {
 	Title string `json:"title"`
-	// 問いだけを見せる手順。答えは次の手順に置く
+	// A step that shows only the question. The answer goes in the next step.
 	Question bool `json:"question,omitempty"`
-	// `o` で開く場所。省略時は最初のコードのブロックから決める
+	// Where `o` opens. Defaults to the first code block.
 	Open   *Location `json:"open,omitempty"`
 	Blocks []Block   `json:"blocks"`
 }
@@ -159,7 +159,7 @@ func Load(path string) (*Tour, error) {
 	return &t, nil
 }
 
-// Validate は形式の誤りを調べる。指しているファイルや行が実在するかは、表示するときに確かめる。
+// Validate checks for format errors. Whether the referenced files and lines exist is checked at display time.
 func (t *Tour) Validate() error {
 	if t.Version != Version {
 		return fmt.Errorf("unsupported version %d (expected %d)", t.Version, Version)

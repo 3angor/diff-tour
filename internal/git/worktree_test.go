@@ -33,9 +33,9 @@ func TestWorktree(t *testing.T) {
 	gitIn(t, dir, "add", "-A")
 	gitIn(t, dir, "commit", "-q", "-m", "init")
 
-	writeFile(t, filepath.Join(dir, "a.txt"), "one\ntwo\n")    // 追跡しているファイルの変更
-	writeFile(t, filepath.Join(dir, "new.txt"), "brand new\n") // 未追跡のファイル
-	writeFile(t, filepath.Join(dir, ".env"), "SECRET=1\n")     // 無視しているファイル
+	writeFile(t, filepath.Join(dir, "a.txt"), "one\ntwo\n")    // change to a tracked file
+	writeFile(t, filepath.Join(dir, "new.txt"), "brand new\n") // untracked file
+	writeFile(t, filepath.Join(dir, ".env"), "SECRET=1\n")     // ignored file
 	index := filepath.Join(dir, ".git", "index")
 	before, _ := os.Stat(index)
 	time.Sleep(10 * time.Millisecond)

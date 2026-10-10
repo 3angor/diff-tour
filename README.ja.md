@@ -1,4 +1,6 @@
-# tour
+# diff-tour
+
+シニアエンジニアの読み方で、差分をたどる。
 
 [English](README.md) | **日本語**
 
@@ -14,7 +16,7 @@ AI に頼めば動くコードはできます。でも、なぜそう書いた�
 Go 1.27、git、ログイン済みの [Claude Code](https://claude.com/claude-code)（`claude`）が必要です。
 
 ```sh
-go install github.com/DaiAoki/tour/cmd/tour@latest
+go install github.com/init-co-jp/diff-tour/cmd/tour@latest
 cd your-repo
 tour
 ```
@@ -66,3 +68,7 @@ go run ./cmd/tour tours/coupons.json --repo path/to/repo --dump --cols 140 --row
 ```
 
 `--dump` は全手順を決まった画面の大きさで書き出します。端末なしでレイアウトを確かめるのに使えます。
+
+## ライセンス
+
+[MIT](LICENSE)

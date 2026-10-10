@@ -1,5 +1,5 @@
-// Package text は、端末に描く行を「スタイル付きの文字列の並び」として扱う。
-// 日本語は 1 文字で 2 マス使うので、幅はすべて表示幅で数える。
+// Package text treats a terminal line as a sequence of styled strings.
+// Japanese characters take two cells each, so all widths are measured in display width.
 package text
 
 import (
@@ -9,17 +9,17 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-// Span は同じスタイルで描く文字列。Style は SGR のパラメータ（例: "1;36"）。
+// Span is a string drawn in a single style. Style holds SGR parameters (e.g. "1;36").
 type Span struct {
 	Text  string
 	Style string
 }
 
-// Line は端末の 1 行分。
+// Line is one terminal line.
 type Line []Span
 
-// 罫線などの「幅が曖昧な文字」は 1 マスとして数える。
-// go-runewidth は LANG が ja_JP だと 2 マスとみなすが、多くの端末は 1 マスで描くため。
+// cond counts East Asian ambiguous-width characters, such as box-drawing characters, as one cell.
+// go-runewidth treats them as two cells when LANG is ja_JP, but most terminals draw them in one.
 var cond = func() *runewidth.Condition {
 	c := runewidth.NewCondition()
 	c.EastAsianWidth = false
@@ -38,7 +38,7 @@ func (l Line) Width() int {
 	return w
 }
 
-// Join は空でないスタイルを ";" でつなぐ。
+// Join joins the non-empty styles with ";".
 func Join(styles ...string) string {
 	parts := make([]string, 0, len(styles))
 	for _, s := range styles {
@@ -49,7 +49,7 @@ func Join(styles ...string) string {
 	return strings.Join(parts, ";")
 }
 
-// Append は直前と同じスタイルならくっつけて、違えば新しい Span を足す。
+// Append merges s into the last Span if the style matches, and otherwise adds a new Span.
 func Append(l Line, s, style string) Line {
 	if s == "" {
 		return l
@@ -71,7 +71,7 @@ func Concat(lines ...Line) Line {
 	return out
 }
 
-// Map はすべての Span のスタイルを書き換えた行を返す。
+// Map returns the line with the style of every Span rewritten.
 func (l Line) Map(f func(style string) string) Line {
 	out := make(Line, len(l))
 	for i, s := range l {
@@ -80,7 +80,7 @@ func (l Line) Map(f func(style string) string) Line {
 	return out
 }
 
-// Fit は幅ちょうどに切り詰める（はみ出すなら末尾を … にする）か、padStyle の空白で埋める。
+// Fit truncates the line to exactly width (ending with … if it overflows), or pads it with spaces in padStyle.
 func Fit(l Line, width int, padStyle string) Line {
 	if width <= 0 {
 		return nil
@@ -113,7 +113,7 @@ outer:
 	return out
 }
 
-// TrimRight は行末の空白を取り除く。
+// TrimRight removes trailing whitespace from the line.
 func TrimRight(l Line) Line {
 	out := append(Line(nil), l...)
 	for len(out) > 0 {
@@ -144,7 +144,7 @@ var (
 	codeRe = regexp.MustCompile("`[^`]+`")
 )
 
-// split は re に合う部分と合わない部分を、順番どおりに返す。
+// split returns the parts that match re and the parts that don't, in order.
 func split(s string, re *regexp.Regexp) (parts []string, matched []bool) {
 	last := 0
 	for _, loc := range re.FindAllStringIndex(s, -1) {
@@ -160,7 +160,7 @@ func split(s string, re *regexp.Regexp) (parts []string, matched []bool) {
 	return parts, matched
 }
 
-// ParseInline は **強調** と `code` だけを解釈する。強調の中に code が入ってもよい。
+// ParseInline interprets only **bold** and `code`. code may appear inside bold.
 func ParseInline(s, base string) []Span {
 	var spans []Span
 	parts, bold := split(s, boldRe)
@@ -182,7 +182,7 @@ func ParseInline(s, base string) []Span {
 	return spans
 }
 
-// 行頭に来てはいけない文字。直前の単位にくっつけて、一緒に折り返す。
+// noLineStart lists characters that must not start a line (kinsoku, Japanese line-breaking rules). They stick to the preceding unit and wrap together with it.
 const noLineStart = "、。，．）」』】〕！？：；・ー…’”)]}.,!?:;"
 
 type unit struct {
@@ -229,7 +229,7 @@ func units(spans []Span) []unit {
 	return merged
 }
 
-// Wrap は幅に収まるように折り返す。英単語は途中で切らず、日本語はどこでも折り返せる。
+// Wrap wraps the line to fit width. English words are never split, while Japanese can break between any characters.
 func Wrap(spans []Span, width int) []Line {
 	var lines []Line
 	var cur Line

@@ -1,5 +1,5 @@
-// Package git は tour が使う git の操作をまとめる。
-// tour は読み取り専用なので、作業ツリーも .git も書き換えないコマンドだけを使う。
+// Package git collects the git operations tour uses.
+// tour is read-only, so it only uses commands that modify neither the working tree nor .git.
 package git
 
 import (
@@ -13,8 +13,8 @@ import (
 )
 
 type DiffLine struct {
-	Kind  byte // ' '、'+'、'-'
-	OldNo int  // 0 は「その側にない」
+	Kind  byte // ' ', '+', '-'
+	OldNo int  // 0 means "not present on that side"
 	NewNo int
 	Text  string
 }
@@ -39,7 +39,7 @@ func Open(dir string) *Repo {
 	return &Repo{Dir: dir, cache: map[string]*string{}}
 }
 
-// run は git を実行して標準出力を返す。失敗したら nil。
+// run runs git and returns its stdout, or nil on failure.
 func (r *Repo) run(args ...string) *string {
 	key := strings.Join(args, "\x00")
 	r.mu.Lock()
@@ -50,7 +50,7 @@ func (r *Repo) run(args ...string) *string {
 	r.mu.Unlock()
 
 	cmd := exec.Command("git", append([]string{"-C", r.Dir, "--no-pager"}, args...)...)
-	// ロックファイルなどの付随的な書き込みもさせない
+	// Don't allow incidental writes such as lock files either.
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
 	var res *string
 	if b, err := cmd.Output(); err == nil {
@@ -63,7 +63,7 @@ func (r *Repo) run(args ...string) *string {
 	return res
 }
 
-// Show はある時点のファイルの中身を行ごとに返す。存在しなければ nil。
+// Show returns a file's contents at a given revision, line by line, or nil if it does not exist.
 func (r *Repo) Show(ref, file string) []string {
 	if ref == Worktree {
 		return r.showWorktree(file)
@@ -75,7 +75,7 @@ func (r *Repo) Show(ref, file string) []string {
 	return strings.Split(strings.TrimSuffix(*out, "\n"), "\n")
 }
 
-// Diff は base から分岐して以降の head での変更（三点リーダー＝分岐点との比較）。
+// Diff is the change in head since it branched from base (three-dot, i.e. compared against the fork point).
 func (r *Repo) Diff(base, head, file string) ([]Hunk, bool) {
 	if head == Worktree {
 		return ParseDiff(r.worktreeDiff(base, file)), true
@@ -87,7 +87,7 @@ func (r *Repo) Diff(base, head, file string) ([]Hunk, bool) {
 	return ParseDiff(*out), true
 }
 
-// MergeBase は a と b の分岐点のコミット。見つからなければ a をそのまま返す。
+// MergeBase is the commit where a and b diverged. If none is found, it returns a unchanged.
 func (r *Repo) MergeBase(a, b string) string {
 	if b == Worktree {
 		b = "HEAD"
@@ -98,7 +98,7 @@ func (r *Repo) MergeBase(a, b string) string {
 	return a
 }
 
-// ListFiles はある時点で dir の下にあるファイルのパスを返す。
+// ListFiles returns the paths of the files under dir at a given revision.
 func (r *Repo) ListFiles(ref, dir string) []string {
 	if ref == Worktree {
 		prefix := strings.TrimSuffix(dir, "/") + "/"
@@ -117,7 +117,7 @@ func (r *Repo) ListFiles(ref, dir string) []string {
 	return nonEmpty(strings.Split(*out, "\n"))
 }
 
-// Commits は base になくて head にあるコミットを、古い順に返す。
+// Commits returns the commits in head but not in base, oldest first.
 func (r *Repo) Commits(base, head string) []Commit {
 	if head == Worktree {
 		head = "HEAD"
@@ -203,7 +203,7 @@ func nonEmpty(ss []string) []string {
 	return out
 }
 
-// RevParse は参照をコミットのハッシュにする。解決できなければ空文字。
+// RevParse resolves a ref to a commit hash, or returns "" if it cannot be resolved.
 func (r *Repo) RevParse(ref string) string {
 	if ref == Worktree {
 		return r.worktreeID()
@@ -215,7 +215,7 @@ func (r *Repo) RevParse(ref string) string {
 	return strings.TrimSpace(*out)
 }
 
-// CurrentBranch は今いるブランチの名前。ブランチにいなければ空文字。
+// CurrentBranch is the name of the current branch, or "" when not on a branch.
 func (r *Repo) CurrentBranch() string {
 	out := r.run("symbolic-ref", "--quiet", "--short", "HEAD")
 	if out == nil {
@@ -224,7 +224,7 @@ func (r *Repo) CurrentBranch() string {
 	return strings.TrimSpace(*out)
 }
 
-// DefaultBranch は変更の比べ先にするブランチ。origin の HEAD が指すもの、なければ main・master などのうち存在するもの。
+// DefaultBranch is the branch to compare changes against: the one origin's HEAD points to, or else whichever of main, master, etc. exists.
 func (r *Repo) DefaultBranch() string {
 	if out := r.run("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); out != nil {
 		name := strings.TrimPrefix(strings.TrimSpace(*out), "origin/")
@@ -243,11 +243,11 @@ func (r *Repo) DefaultBranch() string {
 
 type Branch struct {
 	Name      string
-	Committed int64 // 最後のコミットの時刻（UNIX 秒）
+	Committed int64 // time of the last commit (Unix seconds)
 	Subject   string
 }
 
-// Branches はローカルのブランチを、最後のコミットが新しい順に返す。
+// Branches returns the local branches, most recently committed first.
 func (r *Repo) Branches() []Branch {
 	out := r.run("for-each-ref", "--sort=-committerdate", "--format=%(refname:short)%09%(committerdate:unix)%09%(subject)", "refs/heads/")
 	if out == nil {
@@ -265,7 +265,7 @@ func (r *Repo) Branches() []Branch {
 	return branches
 }
 
-// Ahead は head にあって base にないコミットの数。
+// Ahead is the number of commits in head but not in base.
 func (r *Repo) Ahead(base, head string) int {
 	if head == Worktree {
 		head = "HEAD"
@@ -278,7 +278,7 @@ func (r *Repo) Ahead(base, head string) int {
 	return n
 }
 
-// RawDiff は base の分岐点から head までの差分をそのまま返す。
+// RawDiff returns the raw diff from base's fork point to head.
 func (r *Repo) RawDiff(base, head string) string {
 	if head == Worktree {
 		return r.worktreeDiff(base)
@@ -290,7 +290,7 @@ func (r *Repo) RawDiff(base, head string) string {
 	return *out
 }
 
-// CommitMessages は base になくて head にあるコミットのメッセージ（本文つき）。
+// CommitMessages returns the messages (with bodies) of the commits in head but not in base.
 func (r *Repo) CommitMessages(base, head string) string {
 	if head == Worktree {
 		msgs := r.CommitMessages(base, "HEAD")
@@ -303,7 +303,7 @@ func (r *Repo) CommitMessages(base, head string) string {
 	return *out
 }
 
-// Archive はある時点の全ファイルを tar で返す。読むだけで、リポジトリには何も書かない。
+// Archive returns every file at a given revision as a tar. It only reads and writes nothing to the repository.
 func (r *Repo) Archive(ref string) (io.ReadCloser, func() error, error) {
 	cmd := exec.Command("git", "-C", r.Dir, "archive", "--format=tar", ref)
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")

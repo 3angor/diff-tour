@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/DaiAoki/tour/internal/git"
-	"github.com/DaiAoki/tour/internal/tour"
+	"github.com/init-co-jp/diff-tour/internal/git"
+	"github.com/init-co-jp/diff-tour/internal/tour"
 )
 
 func gitRun(t *testing.T, dir string, args ...string) {
@@ -28,7 +28,7 @@ func commitFile(t *testing.T, dir, content, msg string) {
 	gitRun(t, dir, "commit", "-q", "-m", msg)
 }
 
-// 分岐のあとで main が進んでも、"base" は分岐点のコードを指す
+// Even if main moves on after branching, "base" points at the code at the fork point.
 func TestBaseRefIsMergeBase(t *testing.T) {
 	dir := t.TempDir()
 	gitRun(t, dir, "init", "-q", "-b", "main")

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/DaiAoki/tour/internal/git"
+	"github.com/init-co-jp/diff-tour/internal/git"
 )
 
 func run(t *testing.T, dir string, args ...string) string {

@@ -1,4 +1,4 @@
-// Package ui は端末の画面（ツアーの再生と初期設定）を持つ。
+// Package ui provides the terminal screens (tour playback and initial setup).
 package ui
 
 import (
@@ -7,10 +7,10 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/DaiAoki/tour/internal/i18n"
-	"github.com/DaiAoki/tour/internal/render"
-	"github.com/DaiAoki/tour/internal/text"
-	"github.com/DaiAoki/tour/internal/tour"
+	"github.com/init-co-jp/diff-tour/internal/i18n"
+	"github.com/init-co-jp/diff-tour/internal/render"
+	"github.com/init-co-jp/diff-tour/internal/text"
+	"github.com/init-co-jp/diff-tour/internal/tour"
 )
 
 type editorDoneMsg struct {
@@ -19,7 +19,7 @@ type editorDoneMsg struct {
 	ref    string
 }
 
-// Viewer はツアーを 1 手順ずつ再生する。
+// Viewer plays a tour one step at a time.
 type Viewer struct {
 	ctx       render.Ctx
 	steps     []tour.FlatStep
@@ -112,7 +112,7 @@ func join(lines []text.Line, plain bool) string {
 	return strings.Join(out, "\n")
 }
 
-// Dump は全手順を指定した大きさで描いて返す（確認用）。
+// Dump renders every step at the given size and returns the result (for inspection).
 func Dump(ctx render.Ctx, cols, rows int, plain bool) string {
 	steps := ctx.Tour.Steps()
 	var b strings.Builder
