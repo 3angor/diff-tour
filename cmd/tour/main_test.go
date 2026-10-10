@@ -51,3 +51,27 @@ func TestResolveRemoteBranch(t *testing.T) {
 		t.Fatalf("%d commits in %s..%s, want 2", n, base, head)
 	}
 }
+
+func TestSavedTourBranchInFreshClone(t *testing.T) {
+	upstream := t.TempDir()
+	gitIn(t, upstream, "init", "-q", "-b", "main")
+	commit(t, upstream, "base.txt")
+	gitIn(t, upstream, "checkout", "-q", "-b", "feature/x")
+	commit(t, upstream, "one.txt")
+	gitIn(t, upstream, "checkout", "-q", "main")
+
+	clone := filepath.Join(t.TempDir(), "clone")
+	gitIn(t, upstream, "clone", "-q", upstream, clone)
+	repo := git.Open(clone)
+
+	// A saved tour names the branch as it was where the tour was written; here it exists only as origin/feature/x
+	if got := repo.Resolve("feature/x"); got != "origin/feature/x" {
+		t.Fatalf("Resolve(feature/x) = %q, want origin/feature/x", got)
+	}
+	if got := repo.Resolve("main"); got != "main" {
+		t.Fatalf("Resolve(main) = %q, want main", got)
+	}
+	if got := repo.Resolve("feature/none"); got != "" {
+		t.Fatalf("Resolve(feature/none) = %q, want empty", got)
+	}
+}

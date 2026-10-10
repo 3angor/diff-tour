@@ -215,6 +215,23 @@ func (r *Repo) RevParse(ref string) string {
 	return strings.TrimSpace(*out)
 }
 
+// Resolve returns the name under which ref exists here: ref itself, or else a remote-tracking branch of the same name
+// (a saved tour names its branches, and a fresh clone has them only as origin/<branch>). It returns "" if neither exists.
+func (r *Repo) Resolve(ref string) string {
+	if ref == Worktree || r.RevParse(ref) != "" {
+		return ref
+	}
+	if r.RevParse("origin/"+ref) != "" {
+		return "origin/" + ref
+	}
+	if out := r.run("for-each-ref", "--format=%(refname:short)", "refs/remotes/*/"+ref); out != nil {
+		if name, _, _ := strings.Cut(strings.TrimSpace(*out), "\n"); name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
 // CurrentBranch is the name of the current branch, or "" when not on a branch.
 func (r *Repo) CurrentBranch() string {
 	out := r.run("symbolic-ref", "--quiet", "--short", "HEAD")

@@ -141,6 +141,16 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
+		if repo.RevParse("HEAD") == "" {
+			return fmt.Errorf("%s", i18n.T("err.notRepo", dir))
+		}
+		for _, ref := range []*string{&t.Base, &t.Head} {
+			name := repo.Resolve(*ref)
+			if name == "" {
+				return fmt.Errorf("%s", i18n.T("err.badRef", *ref))
+			}
+			*ref = name
+		}
 		ctx := render.Ctx{Tour: t, Repo: repo}
 		if *dump {
 			fmt.Print(ui.Dump(ctx, *cols, *rows, *plain))
