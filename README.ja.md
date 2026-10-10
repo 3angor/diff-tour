@@ -171,6 +171,8 @@ git と、次のどれか 1 つ（インストールしてログイン済みの�
 | [Codex CLI](https://github.com/openai/codex) | `codex --version` | `codex login` |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `gemini --version` | `gemini` を一度起動する |
 
+Gemini CLI への対応は試験的なものです。読み取り専用で動くことは本物の Gemini CLI で確かめましたが、本物の Gemini のモデルでツアーを最後まで作ったことはまだありません。うまく動かないときは [Issue](https://github.com/init-co-jp/diff-tour/issues) で教えてください。
+
 あとは、リポジトリの中で実行するだけです。
 
 ```sh

@@ -171,6 +171,8 @@ You need git and one of these, installed and signed in:
 | [Codex CLI](https://github.com/openai/codex) | `codex --version` | `codex login` |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `gemini --version` | run `gemini` once |
 
+Gemini CLI support is experimental. Its read-only setup was tested against the real Gemini CLI, but a full tour has not yet been written with a real Gemini model. If it fails, please [open an issue](https://github.com/init-co-jp/diff-tour/issues).
+
 Then, in a repository:
 
 ```sh
