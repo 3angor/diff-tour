@@ -7,4 +7,7 @@ experiments/generate/out/*.raw.json
 experiments/generate/out2/*.raw.json
 experiments/generate/out2/*.log.json
 experiments/generate/out2/*.dump*.txt
+experiments/generate/out[0-9-]*/*.raw.json
+experiments/generate/out[0-9-]*/*.log.json
+experiments/generate/out[0-9-]*/*.dump*.txt
 __pycache__/
