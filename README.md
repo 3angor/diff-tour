@@ -25,7 +25,7 @@ cd your-repo
 tour
 ```
 
-If `tour` is not found, add the line the install script printed to your shell profile. The first time, press Enter three times: to accept the language, the LLM, and your current branch. After that, once is enough. Writing the tour takes 2 to 5 minutes. Then step through it with **→** and **←**, and quit with **q**.
+If `tour` is not found, add the line the install script printed to your shell profile. The first time, a setup screen asks for the display language and the LLM that writes the tour. Both have a recommended choice selected, so press Enter twice. Next, a list of changes you can tour appears, with your current branch selected. Press Enter, and the tour starts being written. From then on, `tour` skips the setup screen and starts at this list. Writing the tour takes 2 to 5 minutes. Then step through it with **→** and **←**, and quit with **q**.
 
 Other ways to install are in [Install](#install), and an example repository to try is in [First run](#first-run).
 
