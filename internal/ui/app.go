@@ -24,12 +24,22 @@ type Target struct {
 	Committed  int64
 	Cached     bool
 	Key        string
+	// head が作業ツリー（未コミットの変更を含む）
+	Uncommitted bool
 }
 
 // FindTargets は、比べ先のブランチより進んでいるローカルのブランチを、いまいるブランチを先頭にして返す。
 func FindTargets(repo *git.Repo, base string, lang i18n.Lang, backend string) []Target {
 	current := repo.CurrentBranch()
 	var targets []Target
+	// 未コミットの変更があれば、それを含めたものを先頭にして選んでおく（AI に書かせた直後の変更は、たいていまだコミットしていない）
+	if repo.Dirty() {
+		label := render.RefName(repo, git.Worktree)
+		key := generate.CacheKey(repo, base, git.Worktree, lang, backend)
+		cached, _ := generate.LoadCached(key)
+		targets = append(targets, Target{Base: base, Head: git.Worktree, Label: label, Current: true,
+			Commits: repo.Ahead(base, "HEAD"), Committed: time.Now().Unix(), Cached: cached != nil, Key: key, Uncommitted: true})
+	}
 	for _, b := range repo.Branches() {
 		if b.Name == base || "origin/"+b.Name == base {
 			continue
@@ -41,8 +51,10 @@ func FindTargets(repo *git.Repo, base string, lang i18n.Lang, backend string) []
 		key := generate.CacheKey(repo, base, b.Name, lang, backend)
 		cached, _ := generate.LoadCached(key)
 		t := Target{Base: base, Head: b.Name, Label: b.Name, Current: b.Name == current, Commits: n, Committed: b.Committed, Cached: cached != nil, Key: key}
-		if t.Current {
+		if t.Current && len(targets) == 0 {
 			targets = append([]Target{t}, targets...)
+		} else if t.Current {
+			targets = append(targets[:1], append([]Target{t}, targets[1:]...)...)
 		} else {
 			targets = append(targets, t)
 		}
@@ -118,7 +130,7 @@ func NewPicker(repo *git.Repo, base string, lang i18n.Lang, backend generate.Bac
 func NewGenerating(repo *git.Repo, base, head string, lang i18n.Lang, backend generate.Backend) *App {
 	a := &App{repo: repo, lang: lang, backend: backend, baseName: base}
 	key := generate.CacheKey(repo, base, head, lang, backend.Name())
-	a.target = Target{Base: base, Head: head, Label: head, Key: key}
+	a.target = Target{Base: base, Head: head, Label: render.RefName(repo, head), Key: key}
 	a.screen = screenGenerating
 	return a
 }
@@ -278,7 +290,14 @@ func (a *App) View() tea.View {
 			if t.Current {
 				notes = append(notes, i18n.T("picker.current"))
 			}
-			notes = append(notes, i18n.T("picker.commits", t.Commits), relativeTime(t.Committed))
+			if t.Uncommitted {
+				if t.Commits > 0 {
+					notes = append(notes, i18n.T("picker.commits", t.Commits))
+				}
+				notes = append(notes, i18n.T("picker.uncommittedNote"))
+			} else {
+				notes = append(notes, i18n.T("picker.commits", t.Commits), relativeTime(t.Committed))
+			}
 			l := text.Line{{Text: cursor, Style: "36"}, {Text: t.Label + strings.Repeat(" ", nameW-text.Width(t.Label)), Style: style}, {Text: "   " + strings.Join(notes, " · "), Style: "90"}}
 			if t.Cached {
 				l = append(l, text.Span{Text: " · " + i18n.T("picker.cached"), Style: "32"})
@@ -292,7 +311,7 @@ func (a *App) View() tea.View {
 		add(text.Line{{Text: " " + i18n.T("picker.keys"), Style: "90"}})
 
 	case screenGenerating:
-		header(i18n.T("gen.title", a.target.Head, a.target.Base))
+		header(i18n.T("gen.title", a.target.Label, a.target.Base))
 		elapsed := time.Since(a.started).Round(time.Second)
 		status := i18n.T("gen.reading", a.backend.Name(), elapsed)
 		if a.phase == "repairing" {

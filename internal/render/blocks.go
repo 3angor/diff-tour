@@ -373,7 +373,7 @@ func renderSchema(ref *tour.SchemaRef, width int, ctx Ctx) []text.Line {
 	}
 	out := []text.Line{text.Fit(text.Line{
 		{Text: " " + i18n.T("schema.title") + " ", Style: "1;97;100"},
-		{Text: "  " + i18n.T("schema.desc", ref.Migrations, ctx.Tour.Base, ctx.Tour.Head), Style: "90"},
+		{Text: "  " + i18n.T("schema.desc", ref.Migrations, ctx.Tour.Base, RefName(ctx.Repo, ctx.Tour.Head)), Style: "90"},
 	}, width, "")}
 	for _, name := range names {
 		if before[name] == nil && after[name] == nil {
@@ -452,11 +452,22 @@ func renderRows(r *tour.Rows, width int) []text.Line {
 	return out
 }
 
+// RefName は画面に出す参照の名前。作業ツリーは「ブランチ名 + 未コミットの変更」と書く。
+func RefName(repo *git.Repo, ref string) string {
+	if ref != git.Worktree {
+		return ref
+	}
+	if branch := repo.CurrentBranch(); branch != "" {
+		return branch + " + " + i18n.T("picker.uncommitted")
+	}
+	return i18n.T("picker.uncommitted")
+}
+
 func renderTarget(width int, ctx Ctx) []text.Line {
 	stat := ctx.Repo.Shortstat(ctx.Tour.Base, ctx.Tour.Head)
 	commits := ctx.Repo.Commits(ctx.Tour.Base, ctx.Tour.Head)
 	out := []text.Line{
-		{{Text: ctx.Tour.Head, Style: "1;36"}, {Text: i18n.T("target.branched", ctx.Tour.Base), Style: "90"}},
+		{{Text: RefName(ctx.Repo, ctx.Tour.Head), Style: "1;36"}, {Text: i18n.T("target.branched", ctx.Tour.Base), Style: "90"}},
 		{{Text: i18n.T("target.summary", len(commits), stat.Files, stat.Insertions, stat.Deletions)}},
 		nil,
 	}

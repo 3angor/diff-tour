@@ -65,6 +65,9 @@ func (r *Repo) run(args ...string) *string {
 
 // Show はある時点のファイルの中身を行ごとに返す。存在しなければ nil。
 func (r *Repo) Show(ref, file string) []string {
+	if ref == Worktree {
+		return r.showWorktree(file)
+	}
 	out := r.run("show", ref+":"+file)
 	if out == nil {
 		return nil
@@ -74,6 +77,9 @@ func (r *Repo) Show(ref, file string) []string {
 
 // Diff は base から分岐して以降の head での変更（三点リーダー＝分岐点との比較）。
 func (r *Repo) Diff(base, head, file string) ([]Hunk, bool) {
+	if head == Worktree {
+		return ParseDiff(r.worktreeDiff(base, file)), true
+	}
 	out := r.run("diff", "--no-color", "--no-ext-diff", "-U3", base+"..."+head, "--", file)
 	if out == nil {
 		return nil, false
@@ -83,6 +89,9 @@ func (r *Repo) Diff(base, head, file string) ([]Hunk, bool) {
 
 // MergeBase は a と b の分岐点のコミット。見つからなければ a をそのまま返す。
 func (r *Repo) MergeBase(a, b string) string {
+	if b == Worktree {
+		b = "HEAD"
+	}
 	if out := r.run("merge-base", a, b); out != nil {
 		return strings.TrimSpace(*out)
 	}
@@ -91,6 +100,16 @@ func (r *Repo) MergeBase(a, b string) string {
 
 // ListFiles はある時点で dir の下にあるファイルのパスを返す。
 func (r *Repo) ListFiles(ref, dir string) []string {
+	if ref == Worktree {
+		prefix := strings.TrimSuffix(dir, "/") + "/"
+		var files []string
+		for f := range r.worktreeFiles() {
+			if dir == "" || dir == "." || strings.HasPrefix(f, prefix) {
+				files = append(files, f)
+			}
+		}
+		return files
+	}
 	out := r.run("ls-tree", "-r", "--name-only", ref, "--", dir)
 	if out == nil {
 		return nil
@@ -100,6 +119,9 @@ func (r *Repo) ListFiles(ref, dir string) []string {
 
 // Commits は base になくて head にあるコミットを、古い順に返す。
 func (r *Repo) Commits(base, head string) []Commit {
+	if head == Worktree {
+		head = "HEAD"
+	}
 	out := r.run("log", "--reverse", "--format=%h%x09%s", base+".."+head)
 	if out == nil {
 		return nil
@@ -117,6 +139,9 @@ type Stat struct{ Files, Insertions, Deletions int }
 var statRe = regexp.MustCompile(`(\d+) (file|insertion|deletion)`)
 
 func (r *Repo) Shortstat(base, head string) Stat {
+	if head == Worktree {
+		return worktreeStat(r.worktreeDiff(base))
+	}
 	var s Stat
 	out := r.run("diff", "--shortstat", base+"..."+head)
 	if out == nil {
@@ -180,6 +205,9 @@ func nonEmpty(ss []string) []string {
 
 // RevParse は参照をコミットのハッシュにする。解決できなければ空文字。
 func (r *Repo) RevParse(ref string) string {
+	if ref == Worktree {
+		return r.worktreeID()
+	}
 	out := r.run("rev-parse", "--verify", "--quiet", ref+"^{commit}")
 	if out == nil {
 		return ""
@@ -239,6 +267,9 @@ func (r *Repo) Branches() []Branch {
 
 // Ahead は head にあって base にないコミットの数。
 func (r *Repo) Ahead(base, head string) int {
+	if head == Worktree {
+		head = "HEAD"
+	}
 	out := r.run("rev-list", "--count", base+".."+head)
 	if out == nil {
 		return 0
@@ -249,6 +280,9 @@ func (r *Repo) Ahead(base, head string) int {
 
 // RawDiff は base の分岐点から head までの差分をそのまま返す。
 func (r *Repo) RawDiff(base, head string) string {
+	if head == Worktree {
+		return r.worktreeDiff(base)
+	}
 	out := r.run("diff", "--no-color", "--no-ext-diff", base+"..."+head)
 	if out == nil {
 		return ""
@@ -258,6 +292,10 @@ func (r *Repo) RawDiff(base, head string) string {
 
 // CommitMessages は base になくて head にあるコミットのメッセージ（本文つき）。
 func (r *Repo) CommitMessages(base, head string) string {
+	if head == Worktree {
+		msgs := r.CommitMessages(base, "HEAD")
+		return msgs + "\n(+ uncommitted changes in the working tree)\n"
+	}
 	out := r.run("log", "--format=%h %s%n%n%b", base+".."+head)
 	if out == nil {
 		return ""

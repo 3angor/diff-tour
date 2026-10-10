@@ -21,12 +21,12 @@ tour
 
 On the first run, `tour` asks two things: the language (detected from your terminal, English by default) and the LLM that writes tours. Run `tour setup` to change them later.
 
-Then pick the change to tour. Your current branch is selected, so you can just press Enter.
+Then pick the change to tour. Your current branch, including uncommitted changes, is selected, so you can just press Enter.
 Writing a tour takes a few minutes; you can watch which files are being read. The tour is saved, so opening it again is instant.
 
 | Command | Tours |
 | --- | --- |
-| `tour` | a branch you choose, compared with the default branch |
+| `tour` | a branch you choose, compared with the default branch. If you have uncommitted changes, the current branch **with** them is listed first |
 | `tour <branch>` | that branch |
 | `tour <commit>` | that single commit |
 | `tour <base>..<head>` | that range |
@@ -55,7 +55,7 @@ Every explanation is labeled with how it is known: **Verified** (backed by code,
 
 `tour` never writes to your working tree or `.git`.
 
-- To write a tour, it exports the files before and after the change to your cache directory and runs Claude Code there with read-only tools only (`Read`, `Grep`, `Glob`; no shell, no web). The code of the change is sent to the LLM you chose.
+- To write a tour, it exports the files before and after the change to your cache directory and runs Claude Code there with read-only tools only (`Read`, `Grep`, `Glob`; no shell, no web). Files ignored by `.gitignore` (such as `.env`) are never exported. The code of the change is sent to the LLM you chose.
 - When you open a file that differs from the commit being toured, it opens a read-only copy under your cache directory instead.
 
 ## Development

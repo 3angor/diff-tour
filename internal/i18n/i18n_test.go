@@ -1,6 +1,13 @@
 package i18n
 
-import "testing"
+import (
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+)
 
 func TestDetect(t *testing.T) {
 	cases := []struct {
@@ -29,5 +36,31 @@ func TestEveryMessageHasJapanese(t *testing.T) {
 		if _, ok := messages[JA][k]; !ok {
 			t.Errorf("missing ja message: %s", k)
 		}
+	}
+}
+
+// ソースコードで使っている文言のキーが、すべて英語と日本語の表にあること（キーがそのまま画面に出るのを防ぐ）
+func TestUsedKeysExist(t *testing.T) {
+	re := regexp.MustCompile(`(?:i18n\.T|statusText)\("([a-zA-Z.]+)"|"(setup\.[a-zA-Z]+)(?:[:|"])`)
+	err := filepath.WalkDir("../..", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return err
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, m := range re.FindAllStringSubmatch(string(b), -1) {
+			key := m[1] + m[2]
+			for _, lang := range Langs {
+				if _, ok := messages[lang][key]; !ok {
+					t.Errorf("%s: %s message missing: %s", path, lang, key)
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

@@ -70,7 +70,11 @@ func buildPrompt(req Request) (string, error) {
 		}
 		b.WriteString("\n\n")
 		if name == "common.md" {
-			fmt.Fprintf(&b, "対象の変更: base は `%s`、head は `%s`。JSON の base と head にはこの名前をそのまま書く。\n\n", req.Base, req.Head)
+			fmt.Fprintf(&b, "対象の変更: base は `%s`、head は `%s`。JSON の base と head にはこの名前をそのまま書く。\n", req.Base, req.Head)
+			if req.Head == git.Worktree {
+				b.WriteString("head はコミットではなく、まだコミットしていない変更を含む作業ツリー。commits.txt にあるコミットのあとに、未コミットの変更が続いている。未コミットの変更だけの差分は uncommitted.diff にある。\n")
+			}
+			b.WriteString("\n")
 		}
 	}
 	return b.String(), nil

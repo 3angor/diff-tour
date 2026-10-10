@@ -18,6 +18,7 @@ import (
 //	head/        変更後の全ファイル
 //	change.diff  base から head への差分
 //	commits.txt  変更に含まれるコミットのメッセージ
+//	uncommitted.diff  （head が作業ツリーのときだけ）まだコミットしていない変更だけの差分
 //
 // リポジトリそのものではなく書き出したものを読ませるのは、LLM の道具を
 // このディレクトリの中に閉じ込めるため（git を使わせなくて済み、作業ツリーにも触れない）。
@@ -42,6 +43,10 @@ func PrepareWorkspace(repo *git.Repo, base, head, dir string) (*Workspace, error
 		"change.diff": repo.RawDiff(base, head),
 		"commits.txt": repo.CommitMessages(base, head),
 	}
+	if head == git.Worktree {
+		// どこまでがコミット済みで、どこからが未コミットかを区別できるように
+		files["uncommitted.diff"] = repo.RawDiff("HEAD", git.Worktree)
+	}
 	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 			return nil, err
@@ -53,6 +58,9 @@ func PrepareWorkspace(repo *git.Repo, base, head, dir string) (*Workspace, error
 func extract(repo *git.Repo, ref, dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
+	}
+	if ref == git.Worktree {
+		return copyWorktree(repo, dir)
 	}
 	r, wait, err := repo.Archive(ref)
 	if err != nil {
@@ -97,4 +105,22 @@ func extract(repo *git.Repo, ref, dir string) error {
 		}
 	}
 	return wait()
+}
+
+// copyWorktree は作業ツリーの読んでよいファイル（追跡しているものと、無視されていない未追跡のもの）を書き出す。
+func copyWorktree(repo *git.Repo, dir string) error {
+	for _, f := range repo.ListFiles(git.Worktree, "") {
+		lines := repo.Show(git.Worktree, f)
+		if lines == nil {
+			continue
+		}
+		target := filepath.Join(dir, filepath.Clean(f))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(target, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
