@@ -69,7 +69,7 @@ git を使わせない形にしたので、生成側は `git log` や `git blame
 生成したツアーは `out/<branch>-<A|B>.json`。Go 版の形式（`"version": 1`）に合わせてある（実行時の出力には version がなかったので、あとから先頭に足した。プロンプトの `format.md` は直してある）。
 
 ```sh
-cd ~/github/tour
+cd ~/github/diff-tour
 mise exec -- go run ./cmd/tour experiments/generate/out/coupons-B.json --repo <題材の複製> --lang ja
 ```
 
