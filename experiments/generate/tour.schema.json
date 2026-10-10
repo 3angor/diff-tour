@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/daiaoki/tour/tour.schema.json",
+  "title": "Tour",
+  "description": "tour のツアー JSON（version 1）。tour-format.ts と prompts/v2/format.md と同じ形。ブロックは「ちょうど 1 種類の項目を持つ」ので oneOf で表す。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "title", "base", "head", "chapters"],
+  "properties": {
+    "version": { "const": 1 },
+    "title": { "type": "string" },
+    "base": { "type": "string" },
+    "head": { "type": "string" },
+    "chapters": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/chapter" }
+    }
+  },
+  "$defs": {
+    "range": {
+      "type": "array",
+      "items": { "type": "integer", "minimum": 1 },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "chapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "steps"],
+      "properties": {
+        "title": { "type": "string" },
+        "steps": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/step" } }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "blocks"],
+      "properties": {
+        "title": { "type": "string" },
+        "question": { "type": "boolean" },
+        "open": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["file", "line"],
+          "properties": {
+            "file": { "type": "string" },
+            "line": { "type": "integer", "minimum": 1 },
+            "at": { "enum": ["base", "head"] }
+          }
+        },
+        "blocks": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/block" } }
+      }
+    },
+    "block": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["p"],
+          "properties": {
+            "p": { "type": "string" },
+            "basis": { "enum": ["fact", "inferred", "opinion"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["quote"],
+          "properties": { "quote": { "type": "string" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["list"],
+          "properties": { "list": { "type": "array", "items": { "type": "string" } } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["pre"],
+          "properties": { "pre": { "type": "string" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["table"],
+          "properties": {
+            "table": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["head", "rows"],
+              "properties": {
+                "head": { "type": "array", "items": { "type": "string" } },
+                "rows": { "type": "array", "items": { "type": "array", "items": { "type": "string" } } }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code"],
+          "properties": {
+            "code": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["file", "lines"],
+              "properties": {
+                "file": { "type": "string" },
+                "at": { "enum": ["base", "head"] },
+                "lines": { "$ref": "#/$defs/range" },
+                "show": { "$ref": "#/$defs/range" },
+                "note": { "type": "string" }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["diff"],
+          "properties": {
+            "diff": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["file"],
+              "properties": {
+                "file": { "type": "string" },
+                "hunks": { "type": "array", "items": { "type": "integer", "minimum": 0 } }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["snippet"],
+          "properties": {
+            "snippet": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["label", "text"],
+              "properties": {
+                "label": { "type": "string" },
+                "text": { "type": "string" },
+                "lang": { "type": "string" }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema"],
+          "properties": {
+            "schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["migrations"],
+              "properties": {
+                "migrations": { "type": "string" },
+                "tables": { "type": "array", "items": { "type": "string" } },
+                "focus": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rows"],
+          "properties": {
+            "rows": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["label", "head", "data"],
+              "properties": {
+                "tag": { "type": "string" },
+                "label": { "type": "string" },
+                "head": { "type": "array", "items": { "type": "string" } },
+                "data": { "type": "array", "items": { "type": "array", "items": { "type": "string" } } },
+                "added": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["target"],
+          "properties": { "target": { "const": true } }
+        }
+      ]
+    }
+  }
+}

@@ -24,6 +24,8 @@ function ref(name) {
 
 const base = ref(tour.base);
 const head = ref(tour.head);
+// 「変更前」のコードは分岐点（merge-base）から読む。Go 版の再生と同じ（main が分岐のあとに進んでいても差分と食い違わない）
+const mergeBase = (git(['merge-base', base, head]) ?? '').trim() || base;
 const changed = new Set((git(['diff', '--name-only', `${base}...${head}`]) ?? '').split('\n').filter(Boolean));
 const fileCache = new Map();
 function lines(at, path) {
@@ -44,7 +46,7 @@ function width(s) {
 }
 
 const KINDS = ['p', 'quote', 'list', 'pre', 'table', 'code', 'diff', 'snippet', 'schema', 'rows', 'target'];
-const stats = { chapters: 0, steps: 0, questions: 0, basis: { fact: 0, inferred: 0, opinion: 0, none: 0 }, kinds: {}, codeRefs: 0, unchangedFiles: new Set(), files: new Set() };
+const stats = { chapters: 0, steps: 0, questions: 0, basis: { fact: 0, inferred: 0, opinion: 0, none: 0 }, basisRule: { questionWithBasis: 0, assertionWithoutBasis: 0 }, kinds: {}, codeRefs: 0, unchangedFiles: new Set(), files: new Set() };
 
 if (tour.version !== 1) errors.push('version が 1 ではない');
 if (!tour.title || !tour.base || !tour.head || !Array.isArray(tour.chapters)) errors.push('title / base / head / chapters がない');
@@ -75,6 +77,10 @@ steps.forEach((step, si) => {
       const b = block.basis ?? 'none';
       if (!(b in stats.basis)) errors.push(`${at}: basis が不正 ${b}`);
       else stats.basis[b]++;
+      // 規則: 問いかけの文（問いの手順の段落、または「？」で終わる段落）には付けない。断定する段落にはすべて付ける
+      const isQuestion = step.question || /[？?]\s*$/.test(block.p);
+      if (isQuestion && block.basis) stats.basisRule.questionWithBasis++;
+      if (!isQuestion && !block.basis) stats.basisRule.assertionWithoutBasis++;
     }
     if (kind === 'pre') {
       for (const l of block.pre.split('\n')) if (width(l) > 76) warnings.push(`${at}: 図の行が 76 桁を超える（${width(l)} 桁）`);
@@ -84,7 +90,7 @@ steps.forEach((step, si) => {
       stats.codeRefs++;
       stats.files.add(c.file);
       if (!changed.has(c.file)) stats.unchangedFiles.add(c.file);
-      const src = lines(c.at === 'base' ? base : head, c.file);
+      const src = lines(c.at === 'base' ? mergeBase : head, c.file);
       if (!src) {
         errors.push(`${at}: ファイルがない ${c.file}（${c.at ?? 'head'}）`);
         continue;

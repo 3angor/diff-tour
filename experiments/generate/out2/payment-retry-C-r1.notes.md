@@ -1,0 +1,55 @@
+**変更前（base）が守っていた約束**
+- 注文の状態の意味（`src/orders/order.ts:1`）
+  - `PENDING_PAYMENT` は「課金したかどうかがまだ分からない」状態。
+  - `PAYMENT_FAILED` は「課金されていないことが確かで、ユーザーがやり直してよい」状態。
+  - 照合バッチの「課金の記録がないので…二重課金にはならない」（`base/src/jobs/reconcilePendingPayments.ts:28`）が、この意味を前提にしている。
+- エラーの意味は `src/payment/gateway.ts` のコメントに書いてある。
+  - Declined（20 行目）: 何度送っても同じ結果になる。
+  - Unavailable（31 行目）: 課金はされていない。
+  - Timeout（42 行目）: 課金が済んでいるかもしれない。
+- base の `OrderService.checkout` の catch（`base/src/orders/orderService.ts:51-58`）
+  - `PAYMENT_FAILED` にするのは Declined のときだけ。
+  - 障害やタイムアウトのときは `PENDING_PAYMENT` のまま残し、照合バッチに判断を任せる。コメントにそう明記されている。
+- 照合バッチ（`reconcilePendingPayments.ts:5-31`）
+  - 10 分以上前に更新された `PENDING_PAYMENT` だけを対象にし、`findCharge` で `PAID` か `PAYMENT_FAILED` に決める。
+  - `PAYMENT_FAILED` の注文は見ない。
+  - `server.ts:23-25` が 5 分ごとに呼び、`app.payments` を渡している。
+- 冪等キーは `paymentKeyFor`（`order.ts:13-19`）で注文 ID から作る。gateway.ts:6 のコメントでは、決済サービス側での保持期間は 24 時間。
+- 既存テスト `base/test/orderService.test.ts:37-41` は「タイムアウトしたら PENDING_PAYMENT のまま残す（課金されたか分からないため）」を守っていた。
+- 二重の確定は「先に PENDING_PAYMENT を保存してから状態を確認する」というアプリの手順で防いでいる（orderService.ts:36-39）。型や DB の制約ではない。
+
+**変更（head）との突き合わせ**
+- `RetryingPaymentGateway`（新規）
+  - Unavailable と Timeout のときだけ、同じ冪等キーで最大 3 回送る。Declined はやり直さない。
+  - 待ち時間は full jitter で決める。sleep と random を差し込めるのでテストしやすい。
+  - ここ自体は筋がよい。
+- 組み込みは `app.ts:8-14`。`OrderService` 自身はリトライのことを知らない。
+  - 新しい catch のコメント「ゲートウェイ側でリトライ済み」は、この組み込みに頼っている（観点 2）。
+- **破られた約束 1**: catch がすべてのエラーで `PAYMENT_FAILED` にするようになった（head orderService.ts:50-55）。
+  - そのため Timeout（課金済みかもしれない）でも「失敗が確定、やり直してよい」の状態になる。
+  - 照合バッチは `PAYMENT_FAILED` を見ないので、課金済みなのに未払いの注文がそのまま残る。
+  - 24 時間を過ぎてからユーザーがやり直すと冪等キーが切れていて、二重課金になりうる（推測。外部サービスの振る舞いはコメント頼み）。
+- **破られた約束 2**: 既存テストの名前と期待値が逆向きに書き換えられた（head test 37-43）。
+  - 偽のゲートウェイ（`test/fakes.ts:15-21`）は、エラーを投げるときに課金を記録しない。
+  - つまり「タイムアウトしたが実は課金済み」は再現されておらず、テストが安全を示していない。
+- **細かい罠**: リトライ中に 1 回目が Timeout で、最後が Unavailable だったとき、投げられるのは最後のエラーだけ（retryingGateway.ts:39）。
+  - 「課金されていないかもしれない」という情報が消える。
+  - だから「Unavailable なら FAILED にしてよい」という線引きも、リトライと組み合わせると成り立たない。
+- **ハンドラ**（checkout.ts:24-31）: 503 `payment_pending` が 502 `payment_failed` に変わった。
+  - タイムアウトのときにも「失敗しました」と表示する。
+  - 外に向けた API の約束も変わる（クライアントが `payment_pending` に頼っているかは、リポジトリからは分からない）。
+- 同時実行
+  - リトライ中は `PENDING_PAYMENT` のままなので、連打は 409 で弾かれる。
+  - 最悪 約 30.6 秒（10 秒 × 3 回 + 待ち 最大 600ms）かかるが、バッチの 10 分より十分短い。
+  - 途中でプロセスが落ちても `PENDING_PAYMENT` が残り、バッチが拾う。ここは問題なし。
+- 新旧の共存: リポジトリはメモリ上の単一プロセスなので、大きな問題はない。
+- 機械的な変更
+  - app.ts の包み直し、orderService.ts の import 削除（hunk 0）。
+  - ハンドラの文言は機械的に見えて意味が変わっている。
+- 型で守る案
+  - ゲートウェイが `charged / declined / unknown` を判別付きの型で返すようにする。
+  - そうすれば、呼び出し側は「分からない」を扱わないとコンパイルが通らない。
+- 直し方の提案
+  - リトライは残す。
+  - catch を base の形（Declined のときだけ FAILED）に戻す。
+  - ハンドラも pending の表示に戻す。

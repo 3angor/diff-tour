@@ -1,0 +1,21 @@
+- 変更前の約束
+  - 金額は円の整数。total_amount は DB の CHECK (>= 0) で守っている（base db/migrations/001_create_orders.sql:4-5）
+  - 状態の意味: CART/PAYMENT_FAILED だけが確定できる。PENDING_PAYMENT は「課金されたか分からない」なので照合バッチに任せる（base src/orders/orderService.ts:33-58、src/jobs/reconcilePendingPayments.ts）
+  - 冪等キーは注文 ID だけで作る order-<id>。決済サービス側では同じキーを 1 回分として扱い、24 時間保持する（order.ts:13-19、payment/gateway.ts:6-7）
+  - リポジトリは interface＋InMemory 実装＋Sqlite 実装で層を分けている（orderRepository.ts:3-7）
+  - db.ts:10 で PRAGMA foreign_keys = ON。マイグレーションはファイルごとにトランザクションで当てる（db.ts:17-25）
+  - README に API と構成の一覧がある（README.md:7,10-17）
+- 変更との突き合わせ
+  - consumeUse は 1 本の条件付き UPDATE。上限は同時実行でも超えない（head sqliteCouponRepository.ts:35-40）。正しい
+  - 機械的な変更: テスト 3 本は discountAmount: 0 を足しただけで、アサーションは変わっていない。sqliteOrderRepository は列の追随、app.ts は組み立て
+  - 既存の注文は DEFAULT 0 で割引 0 になり、確定の金額は変わらない（fact）
+  - 【問題】apply は order.couponCode を見ない。同じ注文に 2 回 apply すると使用回数が 2 回減る。別のコードで上書きすると、前のクーポンの使用回数は戻らない（couponService.ts:18-35）
+  - 【問題】consumeUse と orders.save が同じトランザクションにない。途中で落ちると使用回数だけ減る
+  - used_count は「適用した回数」を数えていて、「支払い済みの回数」ではない。適用したまま支払わない注文も 1 回分を使う
+  - 【制約】discount_amount に CHECK がない。total_amount の慣習（DB の CHECK で守る）と揃っていない。Math.min はアプリの手順だけで守っている
+  - 割引が満額のときは 0 円の課金が飛ぶ。決済サービスが 0 円をどう扱うかは不明（外部）。2xx 以外は httpGateway.ts:35-37 で素の Error になり、PENDING_PAYMENT のまま残る
+  - PAYMENT_FAILED の注文にもクーポンを付けられる。同じ冪等キーで金額を変えて再送することになる。決済サービス側の扱いは不明
+  - 確定中の注文との競合: SQLite は同期 API で、apply の await は即座に解決する Promise だけなので、今は他のリクエストと割り込み合わない（inferred）。ただし偶然の性質に頼っている
+  - 慣習とのずれ: CouponService が具象の SqliteCouponRepository に依存している。README を更新していない。InvalidOrderStateError のメッセージが checkout 用のまま
+  - 新旧の共存: 古いコードでも新しいスキーマで INSERT/UPSERT は通る（新しい列は DEFAULT と、UPDATE で触らないことで保たれる）。ただし古い checkout は割引を無視する（inferred）
+  - readJson の JSON.parse が失敗すると 400 ではなく 500 になる（server.ts:9-13,27-30）

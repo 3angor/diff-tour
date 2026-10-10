@@ -4,3 +4,7 @@
 # 生成の実験の生ログ（手元のパスを含む）
 experiments/generate/out/*.log
 experiments/generate/out/*.raw.json
+experiments/generate/out2/*.raw.json
+experiments/generate/out2/*.log.json
+experiments/generate/out2/*.dump*.txt
+__pycache__/

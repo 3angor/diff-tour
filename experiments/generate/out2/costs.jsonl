@@ -1,0 +1,14 @@
+{"name": "payment-retry-C-r1", "cost": 0.5696, "sec": 151, "fixes": 0, "final_ok": true}
+{"name": "coupons-C-x1", "cost": 0.9554, "sec": 232, "fixes": 2, "final_ok": true}
+{"name": "payment-retry-C-r3", "cost": 0.5822, "sec": 162, "fixes": 0, "final_ok": true}
+{"name": "payment-retry-C-r2", "cost": 0.5902, "sec": 169, "fixes": 0, "final_ok": true}
+{"name": "coupons-C-r2", "cost": 0.6697, "sec": 169, "fixes": 0, "final_ok": true}
+{"name": "coupons-C-r3", "cost": 0.68, "sec": 179, "fixes": 0, "final_ok": true}
+{"name": "coupons-C-r1", "cost": 1.0094, "sec": 258, "fixes": 1, "final_ok": true}
+{"name": "coupons-Cs-r1", "cost": 0.6712, "sec": 161, "fixes": 0, "final_ok": true}
+{"name": "payment-retry-Cs-r1", "cost": 0.7384, "sec": 192, "fixes": 1, "final_ok": false}
+{"name": "payment-retry-B-r1", "cost": 0.9399, "sec": 222, "fixes": 0, "final_ok": true}
+{"name": "coupons-B-r1", "cost": 1.2187, "sec": 304, "fixes": 0, "final_ok": true}
+{"name": "payment-retry-Cs-r2", "cost": 0.4131, "sec": 110, "fixes": 0, "final_ok": true}
+{"name": "daily-sales-C-r1", "cost": 0.4729, "sec": 128, "fixes": 0, "final_ok": true}
+{"name": "daily-sales-C-r2", "cost": 0.4991, "sec": 151, "fixes": 0, "final_ok": true}

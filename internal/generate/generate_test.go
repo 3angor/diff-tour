@@ -12,6 +12,7 @@ func TestExtractJSON(t *testing.T) {
 		`{"a":1}`:                          `{"a":1}`,
 		"```json\n{\"a\":1}\n```":          `{"a":1}`,
 		"notes first\n\n{\"a\":{\"b\":2}}": `{"a":{"b":2}}`,
+		"=== 下調べ ===\n- {x} を見る\n=== ツアー JSON ===\n{\"a\":1}": `{"a":1}`,
 	}
 	for in, want := range cases {
 		if got := string(extractJSON(in)); got != want {

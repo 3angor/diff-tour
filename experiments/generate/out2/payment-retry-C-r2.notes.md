@@ -1,0 +1,31 @@
+**変更前のコードが守っていた約束（base）**
+- `PAYMENT_FAILED` は「課金されていないと分かっている」状態。ユーザーがもう一度確定しても二重課金にならない。根拠は `src/jobs/reconcilePendingPayments.ts:28-29` のコメントと、カード拒否だけを `PAYMENT_FAILED` にしていた `src/orders/orderService.ts:52-55`。
+- `PENDING_PAYMENT` は「課金したかどうか分からない」状態。障害やタイムアウトのときはこのまま残し、照合バッチが `findCharge` で確かめて PAID か PAYMENT_FAILED に決める（`orderService.ts:56-57`、`reconcilePendingPayments.ts:17-31`）。
+- エラーの意味は `src/payment/gateway.ts` に書いてある。
+  - `PaymentUnavailableError` は「課金はされていない」（31行）。
+  - `PaymentTimeoutError` は「課金が済んでいる可能性がある」（42行）。
+  - 冪等キーの保持期間は 24 時間（6行）。
+- 冪等キーは `paymentKeyFor` だけで作る。注文確定とバッチが同じキーを使うためで、`order.ts:13-19` に書いてある。
+- 二重の確定を防ぐ仕組みは、課金の前に PENDING_PAYMENT を保存しておくこと（`orderService.ts:37-40`）。DB の制約ではなく、アプリの手順で守っている。
+- 既存のテスト（base `test/orderService.test.ts:37-41`）は「タイムアウトなら PENDING_PAYMENT のまま」を守っていた。
+- 照合バッチは `server.ts:23-25` で 5 分ごとに動く。10 分以内に更新された注文は触らない（`SETTLE_AFTER_MS`）。
+
+**変更と突き合わせた結果（head）**
+- 既存の約束は破られている。`orderService.ts:50-56` は、どんなエラーでも PAYMENT_FAILED にする。
+  - タイムアウトでは「課金済みなのに PAYMENT_FAILED」が起きうる。
+  - バッチは PENDING_PAYMENT しか見ないので、この注文は二度と直らない。
+  - 冪等キーは 24 時間で切れるので、それ以降にやり直すと二重課金の恐れがある（外部サービスの振る舞いなので推測）。
+- 既存のテストが書き換えられている（`test/orderService.test.ts:37-43`）。
+  - 偽物の `ScriptedPaymentGateway`（`test/fakes.ts:15-21`）は、エラーを投げるときに課金を記録しない。
+  - つまりこのテストは「タイムアウトなら課金されていない」という前提で書かれていて、`gateway.ts:42` の説明と逆になっている。
+- RetryingPaymentGateway は「最後のエラー」だけを投げる（`retryingGateway.ts:39`）。
+  - 1 回目がタイムアウトで 3 回目が 503 のように混ざると、「課金されたかもしれない」という情報が消える。
+  - テストもこの振る舞いを守る形になっている（`test/retryingGateway.test.ts:35-43`）。
+- 想定外のエラーも PAYMENT_FAILED になる。想定外のステータスや、200 のあとの JSON の解析失敗がこれに当たる（`httpGateway.ts:35-39`）。以前は PENDING のまま残り、バッチが拾っていた。
+- 接続や設定で決まる振る舞い：やり直しが効くのは `app.ts:8-14` で包んでいるからだけ。
+  - OrderService のテストはやり直しなしの偽物を使う。なので「ゲートウェイ側でリトライ済み」というコメントは、組み立て方に頼った前提になっている。
+  - バッチの `findCharge` は包んでいてもそのまま中に渡されるだけで、やり直さない。
+- 最悪の待ち時間は、10 秒のタイムアウト × 3 回 + 最大 0.6 秒で、約 30 秒（推測）。429 の Retry-After も見ていない。
+- 同時実行は大丈夫だった。PENDING を先に保存する仕組みは残っていて、バッチの 10 分の猶予は約 30 秒より十分長い。新旧のコードが混ざっても、古いほうが残す PENDING はバッチが処理する。
+- 型や制約で守る案もある。`charge` の結果を判別できる型にして「分からない」を表す種類を持たせれば、呼び出し側に場合分けを強制できる。
+- 機械的な変更は 2 つだけ。import の削除（`PaymentDeclinedError` を使わなくなったため）と、app.ts での組み立ての変更。一方、checkout.ts は文言の変更に見えるが、ユーザーとの約束を変えている。

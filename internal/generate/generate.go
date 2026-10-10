@@ -25,7 +25,7 @@ import (
 var prompts embed.FS
 
 // PromptVersion はプロンプトを変えたら上げる。保存済みのツアーを作り直させるため。
-const PromptVersion = "v0"
+const PromptVersion = "v1"
 
 // MaxRepairs は、検証で誤りが見つかったときに LLM に直させる回数の上限。
 const MaxRepairs = 2
@@ -56,7 +56,7 @@ var languageRules = map[i18n.Lang]string{
 
 func buildPrompt(req Request) (string, error) {
 	var b strings.Builder
-	for _, name := range []string{"common.md", "format.md", "output.md"} {
+	for _, name := range []string{"common.md", "planC.md", "format.md", "output-C.md"} {
 		src, err := prompts.ReadFile("prompts/" + name)
 		if err != nil {
 			return "", err
@@ -80,8 +80,14 @@ func buildPrompt(req Request) (string, error) {
 	return b.String(), nil
 }
 
-// extractJSON は返答から JSON の部分を取り出す（```json の囲みや前置きがあっても外す）。
+// separator は、下調べとツアーの JSON の区切り（prompts/output-C.md で指示している）。
+const separator = "=== ツアー JSON ==="
+
+// extractJSON は返答から JSON の部分を取り出す（下調べ、```json の囲み、前置きがあっても外す）。
 func extractJSON(text string) []byte {
+	if _, after, ok := strings.Cut(text, separator); ok {
+		text = after
+	}
 	start, end := strings.Index(text, "{"), strings.LastIndex(text, "}")
 	if start < 0 || end < start {
 		return nil
@@ -109,16 +115,22 @@ func parse(req Request, text string) (*tour.Tour, []string) {
 	return &t, render.Check(render.Ctx{Tour: &t, Repo: req.Repo})
 }
 
-func repairPrompt(previous string, problems []string) string {
-	return fmt.Sprintf(`あなたが書いたツアーの JSON に、次の問題があった。作業ディレクトリのファイルを読んで確かめ、問題を直した JSON 全体を書き直す。
-直す以外の部分は変えない。最後のメッセージには JSON だけを書く。
+func readPrompt(name string) string {
+	b, err := prompts.ReadFile("prompts/" + name)
+	if err != nil {
+		panic(err) // 埋め込んだファイルなので、ないことはない
+	}
+	return string(b)
+}
 
-## 問題
-- %s
-
-## 前回の JSON
-%s
-`, strings.Join(problems, "\n- "), previous)
+// repairPrompt は検証で見つかった誤りだけを直させる。直す前の JSON は作業ディレクトリの draft.txt に置く。
+func repairPrompt(problems []string) string {
+	return strings.Join([]string{
+		readPrompt("fix.md"),
+		"## 検証の結果\n- " + strings.Join(problems, "\n- "),
+		readPrompt("format.md"),
+		readPrompt("fix-output.md"),
+	}, "\n\n")
 }
 
 // Generate はツアーを書かせる。検証で問題があれば、MaxRepairs 回まで直させる。
@@ -141,6 +153,14 @@ func Generate(ctx context.Context, backend Backend, req Request, workDir string,
 	if err != nil {
 		return nil, stats, err
 	}
+	// 返答に JSON が全くない（途中で止まった、など）なら、直させるのではなく 1 回だけ作り直す
+	if extractJSON(res.Text) == nil {
+		res, err = backend.Run(ctx, ws.Dir, prompt, onEvent)
+		stats.CostUSD += res.CostUSD
+		if err != nil {
+			return nil, stats, err
+		}
+	}
 	for {
 		t, problems := parse(req, res.Text)
 		if len(problems) == 0 {
@@ -151,11 +171,14 @@ func Generate(ctx context.Context, backend Backend, req Request, workDir string,
 		}
 		stats.Repairs++
 		progress(Progress{Phase: "repairing", Repair: stats.Repairs})
-		previous := string(extractJSON(res.Text))
-		if previous == "" {
-			previous = res.Text
+		draft := extractJSON(res.Text)
+		if draft == nil {
+			draft = []byte(res.Text)
 		}
-		res, err = backend.Run(ctx, ws.Dir, repairPrompt(previous, problems), onEvent)
+		if err := os.WriteFile(filepath.Join(ws.Dir, "draft.txt"), draft, 0o644); err != nil {
+			return nil, stats, err
+		}
+		res, err = backend.Run(ctx, ws.Dir, repairPrompt(problems), onEvent)
 		stats.CostUSD += res.CostUSD
 		if err != nil {
 			return nil, stats, err

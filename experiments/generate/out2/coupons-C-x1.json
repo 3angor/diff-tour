@@ -1,0 +1,423 @@
+{
+  "version": 1,
+  "title": "クーポン適用の追加：使用回数の数え方と課金額の変化を読む",
+  "base": "main",
+  "head": "feature/coupons",
+  "chapters": [
+    {
+      "title": "変更の全体像",
+      "steps": [
+        {
+          "title": "対象の変更",
+          "blocks": [
+            {
+              "target": true
+            },
+            {
+              "quote": "注文確定でクーポンの割引を反映し、クーポン適用の API を追加\nPOST /orders/:id/coupon でクーポンコードを受け取り、注文に割引を付ける。\n注文確定では割引を差し引いた金額を課金する。"
+            },
+            {
+              "p": "コミットは 2 つです。1 つ目でクーポンのテーブルと適用処理（`src/coupons/`）を足し、2 つ目で注文確定の課金額と HTTP の入口をつないでいます。",
+              "basis": "fact"
+            },
+            {
+              "list": [
+                "`db/migrations/002_add_coupons.sql` … `coupons` テーブルと、`orders` の 2 列を追加",
+                "`src/coupons/` … クーポンの型・リポジトリ・`CouponService`（新規）",
+                "`src/handlers/applyCoupon.ts` と `src/server.ts` … `POST /orders/:id/coupon` の入口",
+                "`src/orders/orderService.ts` … 課金額を `totalAmount - discountAmount` に変更",
+                "テスト … 既存テストに `discountAmount: 0` を足し、`couponService.test.ts` を新規追加"
+              ]
+            }
+          ]
+        },
+        {
+          "title": "スキーマの変化",
+          "blocks": [
+            {
+              "schema": {
+                "migrations": "db/migrations",
+                "tables": [
+                  "coupons",
+                  "orders"
+                ],
+                "focus": [
+                  "orders.coupon_code",
+                  "orders.discount_amount"
+                ]
+              }
+            },
+            {
+              "p": "使用回数は `coupons.used_count` に数として持ち、どの注文が使ったかは `orders.coupon_code` で表します。使用の記録を 1 件ずつ残すテーブルはありません。このため、数と注文の側の記録が食い違っても、あとから突き合わせる手段がありません。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "db/migrations/002_add_coupons.sql",
+                "lines": [
+                  9,
+                  10
+                ],
+                "show": [
+                  1,
+                  10
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "処理の流れ",
+          "blocks": [
+            {
+              "pre": "POST /orders/:id/coupon  { code }\n  └ handleApplyCoupon       code の形を確かめる\n     └ CouponService.apply\n        ├ orders.get           CART / PAYMENT_FAILED のみ\n        ├ coupons.get          なければ NotFound、期限切れなら Expired\n        ├ coupons.consumeUse   used_count を +1（上限なら UsedUp）\n        └ orders.save          couponCode と discountAmount を保存\n\nPOST /orders/:id/checkout\n  └ OrderService.checkout\n     └ payments.charge  amount = totalAmount - discountAmount"
+            },
+            {
+              "p": "割引額は適用した時点で注文に書き込まれ、注文確定ではその値を引くだけです。クーポンの期限や上限を、確定の時点でもう一度確かめることはしていません。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "クーポンの適用",
+      "steps": [
+        {
+          "title": "CouponService.apply",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/coupons/couponService.ts",
+                "lines": [
+                  25,
+                  33
+                ],
+                "show": [
+                  18,
+                  35
+                ]
+              }
+            },
+            {
+              "p": "注文の状態を確かめ、クーポンの有無・期限・使用回数の順に確かめてから、注文に割引を書き込みます。割引額は `Math.min` で注文金額までに抑えています。",
+              "basis": "fact"
+            },
+            {
+              "p": "状態の確認（21〜23 行目）は `OrderService.checkout` と同じ条件を写したもので、例外も `orderService.ts` のものを使い回しています。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "上限を超えないための UPDATE",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/coupons/sqliteCouponRepository.ts",
+                "lines": [
+                  35,
+                  40
+                ],
+                "show": [
+                  31,
+                  41
+                ]
+              }
+            },
+            {
+              "p": "確認と加算を `WHERE used_count < max_uses` 付きの 1 つの UPDATE で行い、変わった行数で成否を判断しています。読んでから書く 2 段階にしないので、同時に使われても上限は超えません。",
+              "basis": "fact"
+            },
+            {
+              "p": "ただし、この UPDATE が守るのは「数が上限を超えない」ことだけです。何の使用として数えたのかは記録しません。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "同じ注文に 2 回適用したら？",
+          "question": true,
+          "blocks": [
+            {
+              "p": "利用者が同じ注文に同じコードを 2 回送った場合（ボタンの連打や再送）や、コード A を適用したあとにコード B に変えた場合に、`used_count` はどうなるでしょうか。"
+            },
+            {
+              "code": {
+                "file": "src/coupons/couponService.ts",
+                "lines": [
+                  28,
+                  30
+                ],
+                "show": [
+                  18,
+                  35
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "答え：適用するたびに 1 回分消費される",
+          "blocks": [
+            {
+              "p": "`apply` は `order.couponCode` がすでに入っているかを見ていません。同じ注文に何度送っても、そのたびに `consumeUse` が呼ばれて `used_count` が増えます。A から B に変えた場合も、A の 1 回分は戻されません。",
+              "basis": "fact"
+            },
+            {
+              "rows": {
+                "label": "上限 1 回のクーポンを同じ注文 o1 に 2 回送った場合",
+                "head": [
+                  "操作",
+                  "coupons.used_count",
+                  "o1.coupon_code",
+                  "結果"
+                ],
+                "data": [
+                  [
+                    "1 回目の apply",
+                    "1",
+                    "WELCOME",
+                    "200"
+                  ],
+                  [
+                    "2 回目の apply（再送）",
+                    "1（上限）",
+                    "WELCOME",
+                    "409 coupon_used_up"
+                  ],
+                  [
+                    "別の注文 o2 で apply",
+                    "1",
+                    "—",
+                    "409（誰も使っていないのに使えない）"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "上限 2 回以上なら 2 回目も通り、1 つの注文で 2 回分が消費されます。既存の注文確定は、連打への対策を状態の遷移で入れていました（`orderService.ts` 37〜38 行目）。適用の処理にはそれに当たるものがありません。",
+              "basis": "inferred"
+            },
+            {
+              "p": "新しいテストは別々の注文 o1 と o2 で上限を確かめています。同じ注文への再適用は確かめていません。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "test/couponService.test.ts",
+                "lines": [
+                  46,
+                  51
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "consumeUse と save の間",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/coupons/couponService.ts",
+                "lines": [
+                  28,
+                  33
+                ],
+                "show": [
+                  25,
+                  35
+                ]
+              }
+            },
+            {
+              "p": "使用回数の加算（28 行目）と注文の保存（33 行目）は、別々の文として実行されます。同じトランザクションには入っていません。保存が失敗する（制約違反、ディスクの異常など）と、回数だけ増えて注文には割引が付かないまま残ります。",
+              "basis": "inferred"
+            },
+            {
+              "p": "どちらも同じ `db` に対する処理なので、`BEGIN` から `COMMIT` までに包めば一緒に取り消せます。`db.ts` のマイグレーションでも同じ書き方をしています。",
+              "basis": "opinion"
+            },
+            {
+              "code": {
+                "file": "src/db.ts",
+                "lines": [
+                  17,
+                  25
+                ],
+                "note": "変更なし。トランザクションの書き方の参考"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "注文確定と API",
+      "steps": [
+        {
+          "title": "課金額の変更",
+          "blocks": [
+            {
+              "diff": {
+                "file": "src/orders/orderService.ts",
+                "hunks": [
+                  0
+                ]
+              }
+            },
+            {
+              "p": "変更は 1 行だけで、課金額から割引額を引くようになりました。`discountAmount` は必須の項目になったので、既存のテストで注文を作る箇所にはすべて `discountAmount: 0` が足されています。",
+              "basis": "fact"
+            },
+            {
+              "diff": {
+                "file": "test/orderService.test.ts",
+                "hunks": [
+                  1
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "割引が注文金額と同じだったら？",
+          "question": true,
+          "blocks": [
+            {
+              "p": "`apply` は割引額を `Math.min(coupon.discountAmount, order.totalAmount)` で抑えています。3000 円の注文に 5000 円のクーポンを使ったとき、注文確定では決済サービスに何円の課金を依頼するでしょうか。"
+            },
+            {
+              "code": {
+                "file": "src/coupons/couponService.ts",
+                "lines": [
+                  31,
+                  32
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "答え：0 円の課金を依頼する",
+          "blocks": [
+            {
+              "p": "割引額は 3000 円になり、`charge` には `amount: 0` が渡されます。テスト「割引額は注文金額を超えない」が確かめているのは、割引額が 3000 になるところまでです。そのあとの確定の流れは確かめていません。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/orders/orderService.ts",
+                "lines": [
+                  43,
+                  48
+                ]
+              }
+            },
+            {
+              "p": "決済サービスが 0 円の課金を受け付けるかどうかは、このリポジトリからは分かりません。受け付けない場合は 4xx が返ります。`httpGateway.ts` の 35〜36 行目でその応答は汎用の `Error` になるので、注文は PENDING_PAYMENT のまま残ります。",
+              "basis": "inferred"
+            },
+            {
+              "p": "請求額が 0 円の注文では決済を呼ばずに PAID にするか、割引額を注文金額未満に抑えるかを決めておく必要があります。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "PAYMENT_FAILED の注文で金額が変わる",
+          "blocks": [
+            {
+              "p": "`apply` は PAYMENT_FAILED の注文も受け付けます。つまり、一度決済に失敗した注文の金額をあとから変えられます。一方、冪等キーは注文 ID だけから作られ、2 回目の確定でも同じキーが送られます。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/payment/gateway.ts",
+                "lines": [
+                  6,
+                  7
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "同じキーで別の金額を送ったときの扱い（拒否するか、前の結果を返すか）は決済サービスの仕様しだいです。このリポジトリでは確かめられません。冪等キーは同じ内容の再送を想定したものなので、金額が変わる経路ができたことは確かめておく価値があります。",
+              "basis": "inferred"
+            },
+            {
+              "code": {
+                "file": "src/orders/order.ts",
+                "lines": [
+                  20,
+                  22
+                ],
+                "note": "変更なし"
+              }
+            }
+          ]
+        },
+        {
+          "title": "HTTP の入口",
+          "blocks": [
+            {
+              "diff": {
+                "file": "src/server.ts",
+                "hunks": [
+                  0
+                ]
+              }
+            },
+            {
+              "p": "`readJson` は `JSON.parse` の例外を捕まえません。本文が JSON として壊れていると、外側の `catch` で 500 になります。`handleApplyCoupon` は `code` がない場合に 400 を返すよう作られていますが、壊れた JSON はそこまで届きません。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/handlers/applyCoupon.ts",
+                "lines": [
+                  7,
+                  10
+                ],
+                "show": [
+                  6,
+                  21
+                ]
+              }
+            },
+            {
+              "p": "また、`order_not_found` と `coupon_not_found` はどちらも 404 です。呼び出し側は本文の `error` を見ないと区別できません。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "依存の向き",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/coupons/couponService.ts",
+                "lines": [
+                  8,
+                  12
+                ],
+                "show": [
+                  1,
+                  16
+                ]
+              }
+            },
+            {
+              "p": "注文の側は `OrderRepository` というインターフェースに依存し、テストでは `InMemoryOrderRepository` を使っています。`CouponService` は具体的な `SqliteCouponRepository` を受け取るので、クーポンのテストは毎回 SQLite を開いて行を入れています。",
+              "basis": "fact"
+            },
+            {
+              "p": "今の規模なら困りません。ただ、注文の側と書き方が揃っていないことは、レビューで触れておいてよい点です。",
+              "basis": "opinion"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

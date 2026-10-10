@@ -1,0 +1,685 @@
+{
+  "version": 1,
+  "title": "クーポン適用：使用回数・冪等キー・トランザクションの境目を読む",
+  "base": "main",
+  "head": "feature/coupons",
+  "chapters": [
+    {
+      "title": "対象",
+      "steps": [
+        {
+          "title": "読む変更",
+          "blocks": [
+            {
+              "target": true
+            },
+            {
+              "quote": "クーポンのテーブルと適用処理を追加\n注文確定でクーポンの割引を反映し、クーポン適用の API を追加\nPOST /orders/:id/coupon でクーポンコードを受け取り、注文に割引を付ける。注文確定では割引を差し引いた金額を課金する。"
+            },
+            {
+              "p": "コミットは 2 つ。1 つ目でテーブルとサービス、2 つ目で HTTP の入口と課金額の変更を足している。お金の額が変わる変更なので、ここからは「課金額」と「使用回数」の 2 つの数がずれないかを軸に読む。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "何が変わったのか",
+      "steps": [
+        {
+          "title": "ユーザーから見た振る舞い",
+          "blocks": [
+            {
+              "p": "カートの注文にクーポンコードを送ると、割引額が注文に記録される。注文を確定すると「合計 − 割引」が課金される。",
+              "basis": "fact"
+            },
+            {
+              "table": {
+                "head": [
+                  "状況",
+                  "HTTP",
+                  "error"
+                ],
+                "rows": [
+                  [
+                    "code がない・空",
+                    "400",
+                    "code_required"
+                  ],
+                  [
+                    "注文がない",
+                    "404",
+                    "order_not_found"
+                  ],
+                  [
+                    "決済中・支払い済み",
+                    "409",
+                    "invalid_order_state"
+                  ],
+                  [
+                    "クーポンがない",
+                    "404",
+                    "coupon_not_found"
+                  ],
+                  [
+                    "期限切れ",
+                    "410",
+                    "coupon_expired"
+                  ],
+                  [
+                    "使用回数の上限",
+                    "409",
+                    "coupon_used_up"
+                  ],
+                  [
+                    "成功",
+                    "200",
+                    "（orderId と discountAmount）"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "割引額は注文金額で頭打ちになる。3000 円の注文に 5000 円のクーポンを使うと、割引は 3000 円になり、課金額は 0 円になる。",
+              "basis": "fact"
+            },
+            {
+              "p": "クーポンを付けられるのは `CART` と `PAYMENT_FAILED` の注文。一度カードが拒否された注文にも、後からクーポンを付けられる。この点は第 5 章で効いてくる。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "全体の地図",
+      "steps": [
+        {
+          "title": "処理の流れ（変更していない部分も含む）",
+          "blocks": [
+            {
+              "pre": "POST /orders/:id/coupon            ← 新規\n  └ CouponService.apply\n      ├ orders.get → 状態チェック\n      ├ coupons.get → 期限チェック\n      ├ coupons.consumeUse（used_count +1）\n      └ orders.save（coupon_code, discount_amount）\n\nPOST /orders/:id/checkout           ← 1 行だけ変更\n  └ OrderService.checkout\n      ├ status = PENDING_PAYMENT を保存\n      ├ payments.charge(total - discount, key=order-<id>)\n      └ PAID / PAYMENT_FAILED / そのまま\n\n5 分ごと reconcilePendingPayments  ← 変更なし\n  └ 古い PENDING_PAYMENT を key で照会して確定"
+            },
+            {
+              "p": "新しく増えたのは上の段だけ。ただし、上の段が書き込む `discount_amount` は中段の課金額に入る。中段の冪等キーは下段の照合バッチと共有している。だから変更していない中段と下段も読む必要がある。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "既存の約束：状態と冪等キー",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/orders/orderService.ts",
+                "at": "base",
+                "lines": [
+                  37,
+                  40
+                ],
+                "show": [
+                  30,
+                  48
+                ],
+                "note": "変更前"
+              }
+            },
+            {
+              "p": "課金の前に `PENDING_PAYMENT` を保存し、連打を状態チェックで弾く。これが注文確定の要になっている。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/payment/gateway.ts",
+                "at": "base",
+                "lines": [
+                  6,
+                  7
+                ],
+                "show": [
+                  1,
+                  8
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "code": {
+                "file": "src/orders/order.ts",
+                "at": "base",
+                "lines": [
+                  13,
+                  19
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "冪等キーは注文 ID だけから作る。同じ注文なら、何度確定し直しても同じキーになる。決済サービスは同じキーの課金を 24 時間、1 回分として扱う。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "設定で決まる振る舞い：外部キーとマイグレーション",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/db.ts",
+                "at": "base",
+                "lines": [
+                  10,
+                  10
+                ],
+                "show": [
+                  8,
+                  27
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "新しいマイグレーションの `orders.coupon_code REFERENCES coupons (code)` は、SQLite では宣言しただけでは効かない。この接続処理の 10 行目の `PRAGMA foreign_keys = ON` があるから、存在しないコードを `coupon_code` に入れると失敗する。",
+              "basis": "fact"
+            },
+            {
+              "p": "マイグレーションは起動時に番号順に当てられ、1 ファイルずつ `BEGIN`〜`COMMIT` でくるまれている。002 の CREATE と 2 つの ALTER は、まとめて当たるか、まとめて当たらないかのどちらかになる。",
+              "basis": "fact"
+            },
+            {
+              "p": "この「BEGIN／COMMIT／失敗したら ROLLBACK」の書き方は、第 5 章で「足りない箇所」の修正案として使う。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "仕組み",
+      "steps": [
+        {
+          "title": "スキーマの変化",
+          "blocks": [
+            {
+              "schema": {
+                "migrations": "db/migrations",
+                "tables": [
+                  "coupons",
+                  "orders"
+                ],
+                "focus": [
+                  "orders.coupon_code",
+                  "orders.discount_amount"
+                ]
+              }
+            },
+            {
+              "code": {
+                "file": "db/migrations/002_add_coupons.sql",
+                "lines": [
+                  9,
+                  10
+                ],
+                "show": [
+                  1,
+                  10
+                ]
+              }
+            },
+            {
+              "p": "`discount_amount` は `NOT NULL DEFAULT 0` で足しているので、既存の注文は割引 0 円になる。既存の注文の課金額は変わらない。金額を円の整数で持つという 001 の決まり（REAL を使わない）にも従っている。",
+              "basis": "fact"
+            },
+            {
+              "p": "一方で、`coupons` の `discount_amount > 0` や `max_uses > 0` には CHECK を付けているのに、`orders.discount_amount` と `coupons.used_count` には付けていない。この差は第 5 章で扱う。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "なぜ UPDATE の WHERE で上限を確かめるのか",
+          "question": true,
+          "blocks": [
+            {
+              "code": {
+                "file": "src/coupons/sqliteCouponRepository.ts",
+                "lines": [
+                  35,
+                  39
+                ],
+                "show": [
+                  31,
+                  40
+                ]
+              }
+            },
+            {
+              "p": "`apply` は直前に `coupons.get` でクーポンを読んでいて、`usedCount` と `maxUses` も手元にある。それなのに、上限の確認を JavaScript の `if (coupon.usedCount < coupon.maxUses)` で書かず、UPDATE の WHERE に入れている。素直に「読んで、比べて、足す」と書いた場合と比べて、何が違うだろうか？"
+            }
+          ]
+        },
+        {
+          "title": "答え：確認と加算を 1 文にしている",
+          "blocks": [
+            {
+              "snippet": {
+                "label": "このリポジトリにないコード（素直に書いた場合）",
+                "lang": "typescript",
+                "text": "const c = await coupons.get(code);\nif (c.usedCount >= c.maxUses) throw new CouponUsedUpError(code);\ndb.prepare('UPDATE coupons SET used_count = ? WHERE code = ?')\n  .run(c.usedCount + 1, code);"
+              }
+            },
+            {
+              "p": "この書き方だと、2 人が同時に残り 1 回のクーポンを読むと、どちらも「まだ使える」と判断する。2 人とも `used_count = 1` を書くので上限を超えて使われ、しかも数は 1 しか増えない。",
+              "basis": "opinion"
+            },
+            {
+              "p": "実際のコードは `used_count < max_uses` を WHERE に入れ、`used_count + 1` を DB に計算させる。上限に達していれば更新される行が 0 になり、`changes === 1` が false になる。確認と加算の間に他の処理が割り込む余地がない。",
+              "basis": "fact"
+            },
+            {
+              "p": "このやり方を **条件付き更新**（compare-and-set の一種）と呼ぶ。テストでは、上限 1 のクーポンを 2 回使うと 2 回目が拒否され、`usedCount` が 1 のままであることを確かめている（`test/couponService.test.ts:46-51`）。ただし、テストは順番に呼んでいるだけで、同時に呼ぶテストはない。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "apply の順番と頭打ち",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/coupons/couponService.ts",
+                "lines": [
+                  25,
+                  33
+                ],
+                "show": [
+                  18,
+                  35
+                ]
+              }
+            },
+            {
+              "p": "順番は「注文の状態 → クーポンの存在 → 期限 → 使用回数を消費 → 注文に保存」。使用回数の消費は、取り消しにくい副作用なので、安い確認をすべて済ませた後に置いている。この並びは筋が通っている。",
+              "basis": "fact"
+            },
+            {
+              "p": "割引額を `Math.min(割引, 合計)` で頭打ちにしているので、課金額はマイナスにならない。ただし、それを守っているのはこの 1 行だけで、DB には `discount_amount <= total_amount` の制約がない。",
+              "basis": "fact"
+            },
+            {
+              "p": "割引額は適用した時点の合計から計算して保存している。今のコードには合計を後から書き換える処理がないので、ずれは起きない。カートの中身を変える機能が後から入ると、保存した割引額が古くなる。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "課金額の 1 行",
+          "blocks": [
+            {
+              "diff": {
+                "file": "src/orders/orderService.ts"
+              }
+            },
+            {
+              "code": {
+                "file": "test/orderService.test.ts",
+                "lines": [
+                  23,
+                  29
+                ]
+              }
+            },
+            {
+              "p": "課金額は、確定の時点で注文から読んだ `totalAmount - discountAmount`。クーポンのテーブルは見に行かない。適用の時点で割引額を注文にコピーしてあるので、後でクーポンの額を変えても、適用済みの注文の課金額は変わらない。",
+              "basis": "fact"
+            },
+            {
+              "p": "照合バッチは課金額を使わず、冪等キーで課金の有無だけを調べる。そのため、この変更で照合バッチに手を入れる必要はない。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "機械的な変更の仕分け",
+          "blocks": [
+            {
+              "table": {
+                "head": [
+                  "ファイル",
+                  "中身",
+                  "時間を使うか"
+                ],
+                "rows": [
+                  [
+                    "couponService.ts / sqliteCouponRepository.ts",
+                    "使用回数と割引の計算",
+                    "使う"
+                  ],
+                  [
+                    "orderService.ts",
+                    "課金額 1 行",
+                    "使う"
+                  ],
+                  [
+                    "server.ts / applyCoupon.ts",
+                    "入口と HTTP 変換",
+                    "少し"
+                  ],
+                  [
+                    "sqliteOrderRepository.ts",
+                    "列 2 つの読み書き",
+                    "確かめて流す"
+                  ],
+                  [
+                    "既存テスト 3 ファイル",
+                    "discountAmount: 0 の追加",
+                    "確かめて流す"
+                  ],
+                  [
+                    "app.ts",
+                    "組み立て",
+                    "流す"
+                  ]
+                ]
+              }
+            },
+            {
+              "diff": {
+                "file": "test/sqliteOrderRepository.test.ts"
+              }
+            },
+            {
+              "p": "`Order.discountAmount` を必須にしたので、注文を作る箇所はすべて `discountAmount: 0` の追加を強制される。既存テストの書き換えは、この追加だけ。assert や期待値は 1 つも変わっていない。",
+              "basis": "fact"
+            },
+            {
+              "p": "InMemory 版のリポジトリは `structuredClone` でオブジェクトを丸ごと保存するので、新しい項目のための修正は要らない。照合バッチは `get` した注文をそのまま `save` するので、割引を消さない。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "シニアならここで手が止まる",
+      "steps": [
+        {
+          "title": "同じ注文に 2 回 apply すると",
+          "question": true,
+          "blocks": [
+            {
+              "code": {
+                "file": "src/coupons/couponService.ts",
+                "lines": [
+                  19,
+                  30
+                ],
+                "show": [
+                  18,
+                  35
+                ]
+              }
+            },
+            {
+              "p": "ユーザーがクーポン入力欄で「適用」を 2 回押した。あるいは、A を適用した後に「やっぱり B」と入れ直した。このとき、`coupons.used_count` と注文の `coupon_code` はそれぞれどうなるだろうか？"
+            }
+          ]
+        },
+        {
+          "title": "答え：使用回数だけが余計に減る",
+          "blocks": [
+            {
+              "p": "`apply` は `order.couponCode` がすでに入っているかを見ていない。同じコードで 2 回呼ぶと、`consumeUse` が 2 回成功し、使用回数が 2 つ減る。注文に付く割引は 1 回分のまま。",
+              "basis": "fact"
+            },
+            {
+              "rows": {
+                "label": "WELCOME（上限 2）を注文 o1 に 2 回適用し、別の客が注文 o2 で使おうとする",
+                "head": [
+                  "操作",
+                  "used_count",
+                  "o1.coupon_code",
+                  "結果"
+                ],
+                "data": [
+                  [
+                    "初期",
+                    "0",
+                    "なし",
+                    ""
+                  ],
+                  [
+                    "o1 に適用",
+                    "1",
+                    "WELCOME",
+                    "200"
+                  ],
+                  [
+                    "o1 にもう一度適用",
+                    "2",
+                    "WELCOME",
+                    "200"
+                  ],
+                  [
+                    "o2 に適用",
+                    "2",
+                    "",
+                    "409 coupon_used_up"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "A から B に付け替えた場合は、`coupon_code` が B で上書きされる。A の 1 回分は戻らない。どの注文が A を使ったのかという記録もなくなる。",
+              "basis": "fact"
+            },
+            {
+              "p": "直し方は 2 通りある。すでに付いていれば同じコードなら何もせずに返し、違うコードなら弾く（または前のクーポンの回数を戻す）。もう 1 つは、使用の記録を `coupon_redemptions (order_id, code)` のような別テーブルに持ち、`UNIQUE (order_id)` を DB に守らせる。後者は「誰が使ったか」も残る。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "使用回数の消費と注文の保存の間",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/coupons/couponService.ts",
+                "lines": [
+                  28,
+                  33
+                ]
+              }
+            },
+            {
+              "p": "28 行目で使用回数を 1 つ増やし、33 行目で注文を保存している。この 2 つは別々の文で、トランザクションでくるまれていない。",
+              "basis": "fact"
+            },
+            {
+              "p": "33 行目の保存が失敗すると、使用回数だけが減り、注文には割引が付かない。プロセスがその間で落ちた場合も同じになる。DatabaseSync は同期 API なので、この間はとても短く、普段は起きにくい。",
+              "basis": "inferred"
+            },
+            {
+              "p": "注文確定のほうは、途中で落ちても照合バッチが直す設計になっていた。クーポンには、ずれた数を直す仕組みがない。",
+              "basis": "fact"
+            },
+            {
+              "snippet": {
+                "label": "このリポジトリにないコード（修正案。db.ts と同じ書き方）",
+                "lang": "typescript",
+                "text": "db.exec('BEGIN');\ntry {\n  if (!consumeUse(code)) throw new CouponUsedUpError(code);\n  saveOrder(order);\n  db.exec('COMMIT');\n} catch (e) {\n  db.exec('ROLLBACK');\n  throw e;\n}"
+              }
+            },
+            {
+              "p": "そのためには、CouponService が DB の接続（またはトランザクションを開く手段）を受け取る必要がある。今の「サービスはリポジトリ越しにしか DB を触らない」という分け方とどう折り合いを付けるかを、レビューで決めることになる。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "冪等キーは同じまま、金額だけが変わる",
+          "blocks": [
+            {
+              "code": {
+                "file": "test/orderService.test.ts",
+                "lines": [
+                  37,
+                  43
+                ],
+                "note": "変更なし。拒否の後に同じ注文で確定し直せることを守っている"
+              }
+            },
+            {
+              "p": "変更前も、拒否された注文は同じ冪等キー `order-<id>` で確定し直していた。ただし、金額はいつも同じだった。",
+              "basis": "fact"
+            },
+            {
+              "p": "今回、`PAYMENT_FAILED` の注文にもクーポンを付けられるようにした。そのため「1 回目は 3000 円で拒否、クーポンを付けて 2 回目は 2500 円」という、同じキーで金額が違う課金が 24 時間以内に送られうる。",
+              "basis": "fact"
+            },
+            {
+              "p": "同じキーで中身が違うリクエストを、決済サービスがどう扱うかは、渡されたファイルからは分からない。一般的な決済 API では、エラーで拒否するか、1 回目の結果を返すことが多い。エラーの場合、`httpGateway` では想定外のステータスとして素の `Error` になり、500 が返る。注文は `PENDING_PAYMENT` に残り、照合バッチを待つことになる。",
+              "basis": "opinion"
+            },
+            {
+              "p": "もう 1 つ外部の振る舞いに頼る点がある。割引が合計と同じなら、0 円の課金を送る（`test/couponService.test.ts:35-39` がまさにこの状態を作っている）。0 円の課金を受け付けるかも未確認なので、0 円なら課金を飛ばして PAID にするかを決めておきたい。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "型や制約で守れないか",
+          "blocks": [
+            {
+              "p": "今、アプリのコードの手順だけで守っている約束が 3 つある。",
+              "basis": "fact"
+            },
+            {
+              "table": {
+                "head": [
+                  "約束",
+                  "今の守り方",
+                  "DB で守るなら"
+                ],
+                "rows": [
+                  [
+                    "割引 ≤ 合計（課金額 ≥ 0）",
+                    "Math.min の 1 行",
+                    "CHECK (discount_amount BETWEEN 0 AND total_amount)"
+                  ],
+                  [
+                    "used_count ≤ max_uses",
+                    "UPDATE の WHERE",
+                    "CHECK (used_count <= max_uses)"
+                  ],
+                  [
+                    "1 注文に 1 回だけ使う",
+                    "なし",
+                    "使用記録テーブルの UNIQUE"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "CHECK を足せば、将来別の経路（管理画面や手作業の SQL）で書き換えても数がずれない。この利点は大きい。代わりに、違反したときは SQLite のエラーとして 500 になる。利用者向けのエラーは、引き続きアプリ側で出すことになる。",
+              "basis": "opinion"
+            },
+            {
+              "p": "`expires_at` は TEXT で、形式を検証していない。読むときに `new Date(row.expires_at)` を通すので、形式が壊れていると `Invalid Date` になる。`Invalid Date <= now` は常に false なので、そのクーポンはいつまでも期限切れにならない。時刻の付いていない文字列は、実行環境のタイムゾーンで解釈される。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "同時実行：確かめた場所と結果",
+          "blocks": [
+            {
+              "p": "心配したのは「確定の処理が課金を待っている間に `apply` が走り、古い注文を上書きする」こと。どちらも全列を upsert するので、起きれば状態や `chargeId` が巻き戻る。",
+              "basis": "fact"
+            },
+            {
+              "p": "確かめた結果、今の構成では起きない。確定の処理は、課金（ネットワーク）を待つ前に `PENDING_PAYMENT` を保存している（`src/orders/orderService.ts:39-40`）。そのため、課金中に来た `apply` は状態チェックで 409 になる。",
+              "basis": "inferred"
+            },
+            {
+              "p": "`apply` の中の 4 つの await は、どれも同期の DatabaseSync を包んだだけで、I/O を待たない。そのため、`apply` は途中で他のリクエストに割り込まれず、最後まで一気に走る。",
+              "basis": "inferred"
+            },
+            {
+              "p": "これは「SQLite を同期 API で 1 プロセスから使う」という今の前提に乗った安全さになる。リポジトリが非同期の DB に変わったり、プロセスを複数にしたりすると、`apply` の get と save の間に割り込みが入りうる。その場合も `consumeUse` の条件付き更新は守られるが、注文の上書きは守られない。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "書かれた慣習とのずれ",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/coupons/couponService.ts",
+                "lines": [
+                  5,
+                  12
+                ],
+                "show": [
+                  1,
+                  16
+                ]
+              }
+            },
+            {
+              "p": "注文のほうは、インターフェースの `OrderRepository` と InMemory 版・SQLite 版の実装に分け、サービスはインターフェースに依存している（`src/orders/orderRepository.ts:3-9`）。CouponService は具象クラスの `SqliteCouponRepository` に直接依存している。だからクーポンのテストは毎回 SQLite を開いている。",
+              "basis": "fact"
+            },
+            {
+              "p": "`InvalidOrderStateError` を流用しているが、メッセージは `cannot be checked out` のまま（`src/orders/orderService.ts:16`）。クーポン適用で出たログが「確定できない」と読めてしまう。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/server.ts",
+                "lines": [
+                  9,
+                  13
+                ],
+                "show": [
+                  9,
+                  30
+                ]
+              }
+            },
+            {
+              "p": "本文が壊れた JSON だと `JSON.parse` が投げ、外側の catch で 500 になる。ハンドラの 400 `code_required` には届かない。README の `npm start   # POST /orders/:id/checkout` も更新されていない。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "まとめ",
+      "steps": [
+        {
+          "title": "シニアならこうコメントする",
+          "blocks": [
+            {
+              "quote": "使用回数の消費を条件付き UPDATE 1 文にしているのは良い。同時に使われても上限を超えない。\n[must] 同じ注文に apply を 2 回呼ぶと使用回数が 2 つ減り、付け替えると前の 1 回分が戻らない。すでに couponCode がある場合の扱いを決めてほしい。\n[must] consumeUse と orders.save を 1 つのトランザクションに入れてほしい（db.ts のマイグレーションと同じ書き方で）。\n[should] PAYMENT_FAILED の注文に後からクーポンを付けると、同じ冪等キーで金額が変わる。決済サービスの仕様を確認するか、PAYMENT_FAILED では適用を禁止したい。0 円の課金の扱いも決めたい。\n[nit] orders.discount_amount と used_count の CHECK、expires_at の形式、CouponRepository のインターフェース化、エラーの文言、README。"
+            },
+            {
+              "list": [
+                "差分にない確定処理・冪等キー・照合バッチを先に読み、「課金額」と「使用回数」という 2 つの数を軸にした",
+                "外部キーが効くのは db.ts の PRAGMA があるからで、宣言だけでは効かないことを確かめた",
+                "条件付き更新が「読んで比べて書く」より強い理由を、2 人同時の例で見た",
+                "既存テストの書き換えは discountAmount: 0 の追加だけで、assert は変わっていないことを確かめて流した",
+                "同じ入力で 2 回呼ぶ・途中で落ちる・同じキーで金額が変わる、の 3 つで手が止まった",
+                "同時実行は、同期 API と PENDING_PAYMENT の先行保存のおかげで今は安全。ただしその前提は崩れうる",
+                "アプリのコードの 1 行で守っている約束を、DB の CHECK や UNIQUE に移せないかを比べた"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

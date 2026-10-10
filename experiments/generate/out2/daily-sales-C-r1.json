@@ -1,0 +1,476 @@
+{
+  "version": 1,
+  "title": "日ごとの売上レポート：「その日」は誰の暦で決まるのか",
+  "base": "main",
+  "head": "feature/daily-sales",
+  "chapters": [
+    {
+      "title": "対象",
+      "steps": [
+        {
+          "title": "読む変更",
+          "blocks": [
+            {
+              "target": true
+            },
+            {
+              "quote": "Add daily sales report query\nAggregate paid orders for a given day in SQL instead of loading them into the app. Report dates are validated as real YYYY-MM-DD dates.\nAdd CLI to print the daily sales report\n`npm run report:daily [-- YYYY-MM-DD]` prints the sales for the given day as JSON. Without an argument it reports the previous day in Japan time, so it can be run from a morning cron job."
+            },
+            {
+              "p": "コミットは 2 つある。集計のクエリを足すコミットと、それを呼ぶ CLI を足すコミット。2 つ目のメッセージに「Japan time」とある。この言葉を覚えておく。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "何が変わったのか",
+      "steps": [
+        {
+          "title": "コマンドを 1 つ足して、1 日分の売上を JSON で出す",
+          "blocks": [
+            {
+              "p": "利用者から見ると、変わったのはコマンドが 1 つ増えたことだけ。サーバーと注文確定の振る舞いには触れていない。",
+              "basis": "fact"
+            },
+            {
+              "pre": "$ npm run report:daily -- 2026-10-10\n{\"date\":\"2026-10-10\",\"orderCount\":2,\"totalAmount\":4200}\n\n$ npm run report:daily          # 引数なし＝日本時間の「昨日」\n$ npm run report:daily -- 2026-02-30\ninvalid report date: 2026-02-30 (expected YYYY-MM-DD)   # 終了コード 2"
+            },
+            {
+              "p": "数えるのは状態が `PAID` の注文だけ。CART、決済中、決済失敗は数えない。毎朝の定期実行（cron）で前日分を出す使い方を想定している。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "README.md",
+                "lines": [
+                  9,
+                  9
+                ],
+                "show": [
+                  5,
+                  10
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "全体の地図",
+      "steps": [
+        {
+          "title": "レポートは既存の注文の流れの「下流」にいる",
+          "blocks": [
+            {
+              "pre": "[注文確定] OrderService.checkout   (変更なし)\n   CART → PENDING_PAYMENT → PAID / PAYMENT_FAILED\n        │ save()  updated_at = now().toISOString()\n        ▼\n   orders テーブル  索引 (status, updated_at)\n        ▲                       ▲\n[照合バッチ] 5分ごと           [新] DailySalesReport.salesOn\n PENDING_PAYMENT→PAID/FAILED      ▲\n   (変更なし)                  [新] printDailySales main()\n                                  ▲  cron / npm run report:daily"
+            },
+            {
+              "p": "新しいコードは orders テーブルを読むだけで、書き込みはしない。だからこの変更を読むときの関心は「既存の書き手が `status` と `updated_at` にどういう意味を込めているか」になる。新しいコードはその意味に乗っかっているので、変更していないファイルを見に行く必要がある。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "updated_at には何が入っているか（変更なし）",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/orders/sqliteOrderRepository.ts",
+                "at": "base",
+                "lines": [
+                  51,
+                  51
+                ],
+                "show": [
+                  39,
+                  52
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "`updated_at` は保存したときの時計で `toISOString()` した文字列。つまり常に UTC で、`2026-10-10T03:00:00.000Z` の形をしている。`order.updatedAt` に何を渡しても使われない。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "db/migrations/001_create_orders.sql",
+                "at": "base",
+                "lines": [
+                  8,
+                  12
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "列の型は TEXT。時刻の比較は文字列の比較になる。形が揃っている限り、辞書順と時刻の順は一致する。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "PAID は誰が、いつ作るか（変更なし）",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/orders/orderService.ts",
+                "at": "base",
+                "lines": [
+                  33,
+                  35
+                ],
+                "show": [
+                  30,
+                  50
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "注文確定は CART と PAYMENT_FAILED からしか進めない。PAID の注文をもう一度確定しようとすると、ここで弾かれる。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "at": "base",
+                "lines": [
+                  17,
+                  31
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "照合バッチが拾うのは、10 分以上前から PENDING_PAYMENT のままの注文だけ。PAID には触れない。PAID を作るのはこの 2 か所だけで、どちらも PAID にした後は書き換えない。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "仕組み",
+      "steps": [
+        {
+          "title": "集計は SQL 1 本で、索引に合わせた書き方をしている",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/reports/dailySales.ts",
+                "lines": [
+                  54,
+                  61
+                ],
+                "show": [
+                  38,
+                  64
+                ]
+              }
+            },
+            {
+              "p": "注文を 1 件ずつアプリに読み込まず、`COUNT` と `SUM` を DB にさせている。注文がない日は `SUM` が NULL を返すので、`COALESCE(..., 0)` で 0 円にしている。テスト「注文がない日は 0 件・0 円」がこの振る舞いを守っている。",
+              "basis": "fact"
+            },
+            {
+              "p": "`date(updated_at) = ?` と書けば短い。だが列に関数をかけると、既存の `(status, updated_at)` の索引で範囲を絞れなくなる。`status = 'PAID'` の等号と `updated_at` の半開区間なら、索引の並びに沿って読める。",
+              "basis": "inferred"
+            },
+            {
+              "p": "`OrderRepository` にメソッドを足さず、別のクラスにしている。これは「読み書き」と「集計」を分けるという設計の判断で、コメントに理由が書いてある。`InMemoryOrderRepository` まで集計を真似る必要もなくなる。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "日付の検証：Date の繰り越しを組み立て直して見抜く",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/reports/dailySales.ts",
+                "lines": [
+                  22,
+                  31
+                ]
+              }
+            },
+            {
+              "p": "`Date.UTC(2026, 1, 30)` は 3 月 2 日に繰り越されてもエラーにならない。そこで、組み立てた日付の年・月・日を入力と比べ直している。テストは 2024-02-29 を受け付け、2026-02-30 や時刻付きの文字列を弾くことを確かめている。",
+              "basis": "fact"
+            },
+            {
+              "p": "`salesOn` も最初に `parseReportDate` を呼ぶ。CLI で検証済みでも、クラスを直接使う呼び出し元が変な文字列を渡せば、SQL の境界が壊れる。この二重の検証は冗長に見えるが、境界の文字列を組み立てる関数が自分で入口を守っている、と読める。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "CLI：日本時間の「昨日」と終了コード",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/reports/printDailySales.ts",
+                "lines": [
+                  8,
+                  33
+                ]
+              }
+            },
+            {
+              "p": "`sv-SE` ロケールで `Asia/Tokyo` の暦日を YYYY-MM-DD で取り出している。日本には夏時間がないので、24 時間引けば必ず前日になる。テストは「UTC ではまだ 10 日、日本時間ではもう 11 日」という時刻で、日本時間の暦日が使われることを確かめている。",
+              "basis": "fact"
+            },
+            {
+              "p": "日付の誤りだけ終了コード 2 で返し、それ以外の例外はそのまま投げている。cron から見ると「引数の誤り」と「DB の障害など」を区別できる。DB は `finally` で必ず閉じる。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "シニアならここで手が止まる",
+      "steps": [
+        {
+          "title": "日本時間 10 月 11 日 午前 1 時の注文は、どの日の売上になるか",
+          "question": true,
+          "blocks": [
+            {
+              "p": "朝の cron が引数なしで動くと、CLI は日本時間の「昨日」を `salesOn` に渡す。では、日本時間 2026-10-11 01:00 に支払われた注文は、`report:daily -- 2026-10-11` と `report:daily -- 2026-10-10` のどちらに数えられるだろうか？"
+            },
+            {
+              "p": "ヒント：`updated_at` に何が入っていたか、`salesOn` の境界の文字列に何が入るかを並べてみる。"
+            }
+          ]
+        },
+        {
+          "title": "答え：10 日に数えられる。境界が UTC の暦日になっている",
+          "blocks": [
+            {
+              "rows": {
+                "label": "日本時間 10/11 01:00 の注文",
+                "head": [
+                  "",
+                  "値"
+                ],
+                "data": [
+                  [
+                    "保存される updated_at",
+                    "2026-10-10T16:00:00.000Z"
+                  ],
+                  [
+                    "salesOn('2026-10-10') の範囲",
+                    "2026-10-10T00:00:00 〜 2026-10-11T00:00:00"
+                  ],
+                  [
+                    "salesOn('2026-10-11') の範囲",
+                    "2026-10-11T00:00:00 〜 2026-10-12T00:00:00"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "保存値は UTC なのに、境界には時差を付けずに日付をつないでいるだけ。結果として、境界は UTC の 0 時、つまり日本時間の 9 時になる。日本時間 0:00〜8:59 の売上は前日の分に入る。",
+              "basis": "fact"
+            },
+            {
+              "p": "CLI は日本時間の暦日を選び、クエリは UTC の暦日で数える。2 つのファイルのあいだで「1 日」の意味が食い違っている。深夜の売上が多い店ほど、日ごとの数字は実態からずれる。",
+              "basis": "inferred"
+            },
+            {
+              "code": {
+                "file": "src/reports/dailySales.ts",
+                "lines": [
+                  61,
+                  61
+                ],
+                "show": [
+                  52,
+                  63
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "なぜテストは通ったのか",
+          "blocks": [
+            {
+              "code": {
+                "file": "test/dailySales.test.ts",
+                "lines": [
+                  37,
+                  43
+                ]
+              }
+            },
+            {
+              "p": "テストの時刻はすべて `03:00Z` や `05:30Z` で、日本時間でも 12 時台か 14 時台になる。どちらの暦で数えても同じ日に入る時刻しか置いていないので、境界のずれを検出できない。",
+              "basis": "fact"
+            },
+            {
+              "p": "`yesterdayInTokyo` のテストは日本時間の境界を丁寧に突いている。その日付を受け取る `salesOn` 側の境界は試していない。2 つを別々に試して両方が通っても、つないだときの意味は確かめていないことになる。",
+              "basis": "fact"
+            },
+            {
+              "snippet": {
+                "label": "修正案（このリポジトリにないコード）",
+                "lang": "typescript",
+                "text": "// 日本時間の 0 時を UTC に直し、保存値と同じ形の文字列で比べる\nconst start = new Date(`${date}T00:00:00+09:00`).toISOString();\nconst end = new Date(`${nextDate(date)}T00:00:00+09:00`).toISOString();\n// テスト: 日本時間 10/11 01:00 (= '2026-10-10T16:00:00Z') は 10/11 に入る"
+              }
+            },
+            {
+              "p": "`toISOString()` の出力は保存値と同じ `...000Z` の形になるので、文字列の比較もそのまま成り立つ。どちらの暦日を「売上の 1 日」とするかは業務の決めごとなので、PR で明示してもらう。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "「PAID は以後更新されない」はどこで守られているか",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/reports/dailySales.ts",
+                "lines": [
+                  43,
+                  43
+                ],
+                "show": [
+                  38,
+                  45
+                ]
+              }
+            },
+            {
+              "p": "この約束は、いまのコードでは成り立っている。注文確定の状態チェックと、照合バッチが PENDING_PAYMENT しか拾わないこと（地図の章で見た 2 か所）で守られている。",
+              "basis": "fact"
+            },
+            {
+              "p": "ただし守っているのはアプリのコードの手順だけで、DB の制約はない。返金やキャンセルの状態を足したり、PAID の注文の住所を直したりする変更が入れば、`updated_at` は動く。そうなると過去の日の売上が黙って別の日に移る。",
+              "basis": "inferred"
+            },
+            {
+              "p": "照合バッチで PAID になった注文の `updated_at` は、課金ではなく照合した時刻になる。課金から少なくとも 10 分は遅れる。23:55 の課金は翌日の分に入りうるし、朝のレポートを出したあとで前日の課金が当日に計上されることもある。",
+              "basis": "inferred"
+            },
+            {
+              "table": {
+                "head": [
+                  "設計",
+                  "得",
+                  "失"
+                ],
+                "rows": [
+                  [
+                    "今回: updated_at を流用",
+                    "マイグレーション不要、既存の索引が使える",
+                    "約束がコメントにしかない"
+                  ],
+                  [
+                    "paid_at 列を足す",
+                    "意味が列名で固定され、後の更新に強い",
+                    "マイグレーションと書き手 2 か所の改修、索引が要る"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "今回の規模なら流用も選べる。その場合は、注文確定と照合バッチ側のコメントにも「PAID の後に save すると日次売上が動く」と書き残しておきたい。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "レポートを実行するだけで DB が変わる、空の DB でも 0 円と出る",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/db.ts",
+                "at": "base",
+                "lines": [
+                  7,
+                  9
+                ],
+                "show": [
+                  7,
+                  27
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "CLI はサーバーと同じ `openDatabase` を通る。そのため、読むだけのレポートでも、まだ当てていないマイグレーションがその場で当たる。",
+              "basis": "fact"
+            },
+            {
+              "p": "cron で `DATABASE_PATH` を付け忘れると、作業ディレクトリの `shop.db` を開く。ファイルがなければ新しく作られてテーブルも用意され、`{\"orderCount\":0,\"totalAmount\":0}` が正常終了で出てくると推測する。障害ではなく「売上ゼロの日」に見える。",
+              "basis": "inferred"
+            },
+            {
+              "p": "このコマンドは別のプロセスとして定期実行される。それなら、マイグレーションを当てない読み取り専用の開き方を `db.ts` に足すか、少なくとも DB のファイルがないときは失敗させたい。",
+              "basis": "opinion"
+            },
+            {
+              "p": "`import.meta.main` が使える Node の版が README の「23.6 以降」と合っているかも確かめたい。古い版でこの値が undefined になると、コマンドは何もせずに終了コード 0 で終わる。外部の仕様なので、このリポジトリでは確かめていない。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "時間をかけなくてよい差分",
+          "blocks": [
+            {
+              "diff": {
+                "file": "package.json"
+              }
+            },
+            {
+              "diff": {
+                "file": "README.md",
+                "hunks": [
+                  0,
+                  1
+                ]
+              }
+            },
+            {
+              "p": "README と package.json の変更は、コマンドとディレクトリの追記だけ。既存のスクリプトの行は消していないし、書き換えてもいない。テストのグロブ `test/**/*.test.ts` が新しいテストも拾う。",
+              "basis": "fact"
+            },
+            {
+              "p": "既存のテストファイルにも `src/` の既存のファイルにも差分はない。時間をかけるべきなのは `dailySales.ts` の境界と、それが依存している `updated_at` の意味の 2 つ。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "まとめ",
+      "steps": [
+        {
+          "title": "シニアならこうコメントする",
+          "blocks": [
+            {
+              "quote": "集計を SQL に寄せて索引に合わせた範囲で絞る方針、日付の検証、終了コードの分け方はよいと思います。\n一点、CLI は日本時間の「昨日」を選びますが、salesOn の境界は時差なしの文字列なので UTC の暦日で数えています。日本時間 0〜9 時の売上が前日に入ります。境界を `+09:00` から toISOString() で作り、日本時間 0 時台の注文を置くテストを足してください。\nあわせて、updated_at を支払い日時として使う前提を注文確定・照合バッチ側にも書き残すか、paid_at を持つかを決めたいです。CLI がマイグレーションを当てる点と、DB ファイルがないと 0 円で正常終了する点も気になります。"
+            },
+            {
+              "list": [
+                "新しいコードが読む列の「意味」は、変更していない書き手（save、注文確定、照合バッチ）を読んで確かめた",
+                "保存値は UTC の ISO 文字列。日付だけの境界は UTC の暦日になる",
+                "別々に試した 2 つの関数が通っても、つないだときの意味（日本時間と UTC）は試されていなかった",
+                "「PAID は以後更新されない」はアプリの手順だけで守られている。制約にするなら paid_at 列という選択肢がある",
+                "共通の初期化（openDatabase）を通すと、読むだけのコマンドにも書き込みの副作用が付いてくる",
+                "README と package.json は機械的な追記で、振る舞いを変えていないことを確かめた"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
