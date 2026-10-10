@@ -4,6 +4,8 @@
 
 [English](README.md) | **日本語**
 
+![クーポンを足す変更を tour で読んでいるところ](demo/demo-ja.gif)
+
 > 状態: 初期の試作です。ツアーを書く LLM は、いまは [Claude Code](https://claude.com/claude-code) だけに対応しています（ほかの LLM にも対応する予定です）。
 
 AI に頼めば動くコードはできます。でも、なぜそう書いたのかまでは教えてくれません。
@@ -39,7 +41,7 @@ tour
 | `tour <branch>` | そのブランチ |
 | `tour <commit>` | そのコミット 1 つ |
 | `tour <base>..<head>` | その範囲 |
-| `tour <file>.json` | ツアーのファイル（例: `tours/payment-retry.json`） |
+| `tour <file>.json` | ツアーのファイル（例: `tours/example-coupons.ja.json`） |
 
 | キー | 動作 |
 | --- | --- |
@@ -71,7 +73,7 @@ tour
 
 ```sh
 go test ./...
-go run ./cmd/tour tours/coupons.json --repo path/to/repo --dump --cols 140 --rows 44 --plain
+go run ./cmd/tour tours/example-coupons.en.json --repo path/to/diff-tour-example --dump --cols 140 --rows 44 --plain
 ```
 
 `--dump` は全手順を決まった画面の大きさで書き出します。端末なしでレイアウトを確かめるのに使えます。

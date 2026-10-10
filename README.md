@@ -4,6 +4,8 @@ Walk through a diff the way a senior engineer reads it.
 
 **English** | [日本語](README.ja.md)
 
+![tour walking through a change that adds coupons](demo/demo-en.gif)
+
 > Status: early prototype. Tours are written by [Claude Code](https://claude.com/claude-code) for now; other LLMs are planned.
 
 AI can write code that works, but it does not teach you *why* the code is written that way.
@@ -39,7 +41,7 @@ Writing a tour takes a few minutes; you can watch which files are being read. Th
 | `tour <branch>` | that branch |
 | `tour <commit>` | that single commit |
 | `tour <base>..<head>` | that range |
-| `tour <file>.json` | a tour file (for example `tours/payment-retry.json`) |
+| `tour <file>.json` | a tour file (for example `tours/example-coupons.en.json`) |
 
 | Key | Action |
 | --- | --- |
@@ -71,7 +73,7 @@ Every explanation is labeled with how it is known: **Verified** (backed by code,
 
 ```sh
 go test ./...
-go run ./cmd/tour tours/coupons.json --repo path/to/repo --dump --cols 140 --rows 44 --plain
+go run ./cmd/tour tours/example-coupons.en.json --repo path/to/diff-tour-example --dump --cols 140 --rows 44 --plain
 ```
 
 `--dump` prints every step at a fixed screen size, which is handy for checking layouts without a terminal.
