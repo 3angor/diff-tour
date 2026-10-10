@@ -1,0 +1,709 @@
+{
+  "version": 1,
+  "title": "注文の CSV 書き出し：既存の検索を広げるとき、何が一緒に動くか",
+  "base": "main",
+  "head": "feature/order-export",
+  "chapters": [
+    {
+      "title": "対象",
+      "steps": [
+        {
+          "title": "読む変更：管理用の注文 CSV 書き出し",
+          "blocks": [
+            {
+              "target": true
+            },
+            {
+              "quote": "f4c1850 期間を指定して注文を CSV に書き出す処理を追加\n経理の月次の突き合わせや問い合わせ対応で、期間内の注文を一覧で見たいという要望があった。日付は日本時間で受け取り、to の日も含める。注文の検索は照合バッチと同じ findByStatusUpdatedBefore を使い、状態を問わない検索と期間の下限を指定できるようにした。\n6e2ec87 注文の CSV を書き出す管理用の API を追加\nx-admin-token ヘッダーの値を環境変数 ADMIN_TOKEN と比べて、管理者以外からは呼べないようにした。"
+            },
+            {
+              "p": "シニアはコミットメッセージから 3 つの言葉を拾っておく。「経理の月次の突き合わせ」「照合バッチと同じ findByStatusUpdatedBefore を使い」「管理者以外からは呼べない」。この 3 つが、あとで手が止まる場所にそのままつながる。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "何が変わったのか",
+      "steps": [
+        {
+          "title": "管理者が期間を指定して注文の一覧を落とせる",
+          "blocks": [
+            {
+              "p": "新しい入口は `GET /admin/orders.csv?from=2026-10-01&to=2026-10-31` の 1 つだけ。`x-admin-token` ヘッダーが合っていれば、期間内に更新された注文を状態を問わず CSV で返す。",
+              "basis": "fact"
+            },
+            {
+              "table": {
+                "head": [
+                  "要求",
+                  "結果"
+                ],
+                "rows": [
+                  [
+                    "トークンが正しく、日付も正しい",
+                    "200、CSV（UTF-8、CRLF 改行、添付ファイル）"
+                  ],
+                  [
+                    "トークンが違う・ない",
+                    "401 `unauthorized`"
+                  ],
+                  [
+                    "日付の形が違う・実在しない・from > to",
+                    "400 `invalid_range`"
+                  ],
+                  [
+                    "それ以外の想定外のエラー",
+                    "500（server がログに出す）"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "日付は日本時間の暦日で、`to` の日も含む。10/1〜10/31 を指定すると、UTC の 9/30 15:00 以上、10/31 15:00 未満になる。テストがこの境界を秒単位で確かめている。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "test/orderExport.test.ts",
+                "lines": [
+                  35,
+                  39
+                ],
+                "show": [
+                  33,
+                  48
+                ]
+              }
+            },
+            {
+              "p": "既存の注文確定（`POST /orders/:id/checkout`）と照合バッチの振る舞いは、変えない前提の変更になっている。その前提が本当に守られているかを、次の章から確かめる。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "全体の地図",
+      "steps": [
+        {
+          "title": "要求が SQLite に届くまで。照合バッチと同じ道を通る",
+          "blocks": [
+            {
+              "pre": "GET /admin/orders.csv\n  └ server.ts            ルーティング（追加）\n     └ handlers/orderExport.ts  認証・入力→HTTP（新規）\n        └ reports/orderExport.ts 期間の解釈・CSV（新規）\n           └ OrderRepository\n              .findByStatusUpdatedBefore(null, to, from)\n                └ SqliteOrderRepository → orders 表\n\n5 分ごと（変更なし）\n  └ jobs/reconcilePendingPayments.ts\n     └ .findByStatusUpdatedBefore('PENDING_PAYMENT', 10分前)\n        └ 同じメソッド・同じ表・同じ索引"
+            },
+            {
+              "p": "書き出しは新しい層 `src/reports/` に置かれ、README に「集計や書き出し（読み取り専用）」と追記されている。handler は HTTP との変換だけ、という既存の層の分け方に従っている。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "README.md",
+                "lines": [
+                  21,
+                  27
+                ],
+                "show": [
+                  19,
+                  27
+                ]
+              }
+            },
+            {
+              "p": "地図で一番大事なのは下の 2 本が合流する点。お金の確定を担う照合バッチと、新しい書き出しが、同じメソッドを共有するようになった。共有したものを変えるときは、元の持ち主を先に見に行く。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "共有されたメソッドの元の持ち主を見に行く（変更なし）",
+          "blocks": [
+            {
+              "p": "変更前の `findByStatusUpdatedBefore` は、照合バッチ専用の検索だった。「決済中のまま 10 分以上たった注文」を探し、決済サービスの記録と突き合わせて PAID か PAYMENT_FAILED に確定させる。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "at": "base",
+                "lines": [
+                  17,
+                  20
+                ],
+                "show": [
+                  5,
+                  33
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "索引も、このバッチのために張られている。マイグレーションのコメントにそう書いてある。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "db/migrations/001_create_orders.sql",
+                "at": "base",
+                "lines": [
+                  11,
+                  12
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "もう 1 つ覚えておくこと：`updated_at` は注文を `save` するたびに今の時刻で上書きされる。注文確定、決済の失敗、照合バッチの 3 か所が `save` を呼ぶ。この列は「最後に触った時刻」であって、「支払われた時刻」ではない。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/orders/sqliteOrderRepository.ts",
+                "at": "base",
+                "lines": [
+                  51,
+                  51
+                ],
+                "show": [
+                  39,
+                  52
+                ],
+                "note": "変更なし"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "仕組み",
+      "steps": [
+        {
+          "title": "日付を時刻の範囲に変える：半開区間と往復の検査",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/reports/orderExport.ts",
+                "lines": [
+                  22,
+                  43
+                ],
+                "show": [
+                  12,
+                  44
+                ]
+              }
+            },
+            {
+              "p": "範囲は「from 以上 to 未満」の半開区間で持つ（12 行目のコメント）。`to` の日を含めるため、`to` の 0:00 に 1 日足した時刻を上限にしている。`<= 23:59:59.999` と書かないので、ミリ秒の取りこぼしを考えなくてよい。",
+              "basis": "fact"
+            },
+            {
+              "p": "`+09:00` の固定と `DAY_MS` の足し算で正しく動くのは、日本に夏時間がないから。タイムゾーンを持つ国の時刻をそのまま扱う書き方ではない。",
+              "basis": "opinion"
+            },
+            {
+              "p": "26〜28 行目は一見冗長に見える。だが `new Date('2026-02-30T00:00:00+09:00')` はエラーにならず 3 月 2 日へ繰り越すので、日付に戻して入力と比べないと、存在しない日付が通ってしまう。テストの 27 行目が、この場合を押さえている。",
+              "basis": "fact"
+            },
+            {
+              "p": "検証を通った `from` / `to` は数字とハイフンだけになる。だから handler がそれを `content-disposition` のファイル名にそのまま埋めても、ヘッダーへの注入は起きない。順番（検証してから使う）が安全を支えている。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "照合バッチの振る舞いは変わっていないか？",
+          "question": true,
+          "blocks": [
+            {
+              "p": "`findByStatusUpdatedBefore` のシグネチャが `(status: OrderStatus | null, before: Date, since?: Date)` に広がり、SQL は文字列を組み立てる形に書き換わった。照合バッチの呼び出し側は 1 文字も変わっていない。"
+            },
+            {
+              "p": "照合バッチが毎回出す SQL は、変更の前後で同じ意味のままだろうか。どのファイルのどの行を見れば、そう言い切れるだろうか？"
+            }
+          ]
+        },
+        {
+          "title": "答え：同じ意味の SQL になる。既存のテストも書き換えられていない",
+          "blocks": [
+            {
+              "diff": {
+                "file": "src/orders/sqliteOrderRepository.ts"
+              }
+            },
+            {
+              "p": "照合バッチは `status` に `'PENDING_PAYMENT'` を渡し、`since` は渡さない。そのため条件は `updated_at < ? AND status = ?` になる。変更前の `status = ? AND updated_at < ?` とは並びが違うだけで、意味は同じ。`ORDER BY updated_at` も残っている。",
+              "basis": "fact"
+            },
+            {
+              "p": "SQL に埋め込むのは固定の文字列だけで、値はすべて `?` のプレースホルダーで渡している。文字列を組み立てていても、SQL インジェクションの入口にはなっていない。",
+              "basis": "fact"
+            },
+            {
+              "diff": {
+                "file": "src/orders/orderRepository.ts",
+                "hunks": [
+                  1
+                ]
+              }
+            },
+            {
+              "p": "InMemory 版も、`status` を渡したときの絞り込みは前と同じ。`reconcilePendingPayments.test.ts` と `orderService.test.ts` は差分に含まれていない。既存のテストを書き換えて通した形跡はない。",
+              "basis": "fact"
+            },
+            {
+              "p": "細かい差が 1 つある。SQLite 版は `ORDER BY updated_at` で古い順に返すが、InMemory 版は並べ替えない。書き出しのテストは保存した順と時刻の順が一致しているので通っている。インターフェースのコメントは並び順を約束していない。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "CSV の組み立て：既存の決まりに乗っている",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/reports/orderExport.ts",
+                "lines": [
+                  56,
+                  79
+                ],
+                "show": [
+                  46,
+                  79
+                ]
+              }
+            },
+            {
+              "p": "`payment_key` の列は `paymentKeyFor(order)` で作っている。`order.ts` のコメントにある「必ずここで作る」という決まりに従っている。問い合わせ対応で決済サービスの記録を引くとき、照合バッチと同じキーで引ける。",
+              "basis": "fact"
+            },
+            {
+              "p": "列名 `total_amount_jpy` は、金額を円の整数で持つという `001_create_orders.sql` の決まりを、列名に出したもの。`csvField` はカンマ・引用符・改行を含む値だけを引用符で囲む。テストは `acme, \"inc\"` で、値が 1 つの列に収まることを確かめている。",
+              "basis": "fact"
+            },
+            {
+              "p": "`updated_at` を文字列で比べてよいのは、書き込みがすべて `toISOString()`（同じ桁数・UTC）を通るから。比べる側の `since` / `before` も `toISOString()` で作っている。",
+              "basis": "fact"
+            },
+            {
+              "p": "`=` で始まる値を表計算ソフトが式として実行する「CSV インジェクション」の対策はしていない。`customer_id` が利用者の入力から来るなら、検討の余地がある。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "handler：既存の checkout と同じエラーの扱い",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/handlers/orderExport.ts",
+                "lines": [
+                  33,
+                  40
+                ],
+                "show": [
+                  25,
+                  51
+                ]
+              }
+            },
+            {
+              "p": "知っているエラー（`InvalidExportRangeError`）だけを 400 に変え、それ以外は投げ直す。投げ直したエラーは server が 500 にしてログに出す。`handlers/checkout.ts` と同じ形をしている。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/handlers/checkout.ts",
+                "at": "base",
+                "lines": [
+                  15,
+                  33
+                ],
+                "show": [
+                  10,
+                  35
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "新しい型 `RawHttpResult` は、既存の `HttpResult` に `headers` を足したもの。既存の型は server 側で body を JSON にする前提なので、CSV と `content-disposition` を返すには別の型が要る。既存の型を広げず別に作ったので、checkout には触れずに済んでいる。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "時間をかける場所と、流し読みでよい場所",
+          "blocks": [
+            {
+              "table": {
+                "head": [
+                  "変更",
+                  "仕分け",
+                  "確かめたこと"
+                ],
+                "rows": [
+                  [
+                    "`app.ts` に `adminToken` を足す",
+                    "機械的（ただし次章）",
+                    "1 行の追加。既定値はない"
+                  ],
+                  [
+                    "README",
+                    "機械的",
+                    "構成表の追記と使い方だけ"
+                  ],
+                  [
+                    "`server.ts` のルーティング",
+                    "ほぼ機械的",
+                    "既存の checkout の分岐の前に足しただけ。404 と checkout の行は同じまま"
+                  ],
+                  [
+                    "インターフェースのシグネチャ",
+                    "追随",
+                    "照合バッチの呼び出しは前と同じ意味（前の手順で確認）"
+                  ],
+                  [
+                    "handler の認証の比較",
+                    "頭を使う",
+                    "次章"
+                  ],
+                  [
+                    "リポジトリの検索条件・索引",
+                    "頭を使う",
+                    "次章"
+                  ],
+                  [
+                    "`updated_at` で期間を切ること",
+                    "頭を使う",
+                    "次章"
+                  ]
+                ]
+              }
+            },
+            {
+              "diff": {
+                "file": "src/server.ts"
+              }
+            },
+            {
+              "p": "server の追加部分は、既存の checkout の分岐と同じく try/catch で 500 を返し、`return` で抜ける。checkout 側の正規表現は `req.url` をそのまま見ており、変わっていない。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "シニアならここで手が止まる",
+      "steps": [
+        {
+          "title": "ADMIN_TOKEN を設定し忘れて起動したら？",
+          "question": true,
+          "blocks": [
+            {
+              "code": {
+                "file": "src/app.ts",
+                "lines": [
+                  15,
+                  15
+                ],
+                "show": [
+                  6,
+                  16
+                ]
+              }
+            },
+            {
+              "code": {
+                "file": "src/handlers/orderExport.ts",
+                "lines": [
+                  25,
+                  28
+                ]
+              }
+            },
+            {
+              "p": "本番で誰かが環境変数 `ADMIN_TOKEN` を設定し忘れたまま起動したとする。そこに `x-admin-token` ヘッダーを付けない要求が来たら、`handleOrderExport` は何を返すだろうか？"
+            }
+          ]
+        },
+        {
+          "title": "答え：誰でも全注文の CSV を取れる",
+          "blocks": [
+            {
+              "p": "`createApp` は `env.ADMIN_TOKEN` をそのまま渡し、既定値も起動時の検査もない。そのため `deps.adminToken` は `undefined` になる。server はヘッダーが文字列でなければ `undefined` を渡す。結果、`undefined !== undefined` が false になり、認証を通ってしまう。",
+              "basis": "fact"
+            },
+            {
+              "p": "Node の http では、ヘッダーがないとき `req.headers['x-admin-token']` が `undefined` になる。そのため、実際の HTTP 要求でもこの経路を通るはず（動かしては確かめていない）。",
+              "basis": "inferred"
+            },
+            {
+              "code": {
+                "file": "test/orderExportHandler.test.ts",
+                "lines": [
+                  22,
+                  26
+                ],
+                "show": [
+                  6,
+                  26
+                ]
+              }
+            },
+            {
+              "p": "テストは「トークンがない」場合を試しているが、`setup()` が必ず `adminToken: 'secret'` を入れている。「サーバー側の設定がない」場合は一度も試していない。テストの名前どおりに見えて、穴の側を通っていない。",
+              "basis": "fact"
+            },
+            {
+              "p": "`app.ts` の他の環境変数には `?? 'test-key'` のような開発用の既定値がある。だから「設定しなくても動く」のがこのリポジトリの空気になっていて、設定し忘れは起きやすい。",
+              "basis": "fact"
+            },
+            {
+              "snippet": {
+                "label": "修正案（このリポジトリにないコード）",
+                "lang": "typescript",
+                "text": "// handler: サーバー側に設定がなければ、誰も通さない\nif (!deps.adminToken || req.token !== deps.adminToken) {\n  return json(401, { error: 'unauthorized' });\n}\n\n// test: 設定がないときに、ヘッダーなしで通らないこと\nconst deps = { ...(await setup()), adminToken: undefined };\nassert.equal((await handleOrderExport(deps, { token: undefined, query: october })).status, 401);"
+              }
+            },
+            {
+              "p": "さらに確実にするなら、`Deps.adminToken` を `string` にして、`createApp` で未設定なら起動を止める。型と起動時の検査で約束を守る形になる。比べる処理は `crypto.timingSafeEqual` を使う定数時間の比較にしておくのが定石。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "status を指定しない検索に、索引は効くか",
+          "blocks": [
+            {
+              "code": {
+                "file": "db/migrations/001_create_orders.sql",
+                "lines": [
+                  11,
+                  12
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "索引は `(status, updated_at)` の順で張られている。照合バッチは `status = ?` で先頭の列を固定してから `updated_at` の範囲を引けた。書き出しは `status` を指定しない。今回の変更にマイグレーションはない。",
+              "basis": "fact"
+            },
+            {
+              "p": "先頭の列が決まらないので、SQLite はこの索引を範囲検索に使えず、表全体を読むことになる可能性が高い。`EXPLAIN QUERY PLAN` で確かめる価値がある。",
+              "basis": "inferred"
+            },
+            {
+              "p": "`node:sqlite` の `DatabaseSync` は同期 API。全件を読む SELECT と CSV の組み立てのあいだはイベントループが止まり、同じプロセスの注文確定の要求も待たされる。期間の長さに上限はなく、結果はすべてメモリーに載せてから返す。",
+              "basis": "inferred"
+            },
+            {
+              "p": "注文が少ないうちは問題にならない。ただ、管理者が 1 年分を指定したときに顧客側の注文確定が遅れる、という形で表に出る。`002_` のマイグレーションで `updated_at` の索引を足すか、期間の上限（例：92 日）を設けるかを、この PR で決めておきたい。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "null で「すべて」：照合バッチのメソッドに意味を足してよいか",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/orders/orderRepository.ts",
+                "lines": [
+                  6,
+                  10
+                ],
+                "show": [
+                  3,
+                  11
+                ]
+              }
+            },
+            {
+              "p": "名前は `findByStatusUpdatedBefore`（状態で探す、より前）のまま、「状態を問わない」と「より後」が加わった。書き出しの呼び出しは `findByStatusUpdatedBefore(null, range.to, range.from)` で、引数の順が「to, from」と逆になっている。名前から引数の意味が読めない。",
+              "basis": "fact"
+            },
+            {
+              "p": "照合バッチの約束は「必ず状態を絞る」こと。いまの型では、照合バッチ側が誤って `null` を渡しても型エラーにならない。全注文を決済サービスに問い合わせて状態を書き換える道が、型の上では開いている。",
+              "basis": "inferred"
+            },
+            {
+              "snippet": {
+                "label": "選ばなかった設計の例（このリポジトリにないコード）",
+                "lang": "typescript",
+                "text": "export interface OrderRepository {\n  // 照合バッチ用。状態は必須のまま\n  findByStatusUpdatedBefore(status: OrderStatus, before: Date): Promise<Order[]>;\n  /** from 以上 to 未満に更新された注文（状態を問わない） */\n  findUpdatedBetween(range: { from: Date; to: Date }): Promise<Order[]>;\n}"
+              }
+            },
+            {
+              "table": {
+                "head": [
+                  "",
+                  "いまの形（引数を広げる）",
+                  "別のメソッドに分ける"
+                ],
+                "rows": [
+                  [
+                    "照合バッチの約束",
+                    "型では守れない",
+                    "型で守れる（null を渡せない）"
+                  ],
+                  [
+                    "実装の量",
+                    "SQL 1 本を条件で組み立てる",
+                    "SQL が 2 本、InMemory も 2 つ"
+                  ],
+                  [
+                    "呼び出しの読みやすさ",
+                    "`(null, to, from)`",
+                    "`({ from, to })`"
+                  ],
+                  [
+                    "索引の議論",
+                    "混ざる",
+                    "メソッドごとに張る理由が言える"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "メソッドを分ける程度の重複より、お金を確定させるバッチの入口を型で狭く保つ利益のほうが大きい。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "「期間内に更新された」は経理の月次に使えるか",
+          "blocks": [
+            {
+              "p": "`updated_at` は最後に `save` された時刻。照合バッチは、確定から 10 分以上たった PENDING_PAYMENT を PAID / PAYMENT_FAILED にして `save` する。注文確定は PAYMENT_FAILED の注文をもう一度受け付けて `save` する。どちらも `updated_at` を進める。",
+              "basis": "fact"
+            },
+            {
+              "rows": {
+                "label": "月末に決済が詰まった注文（説明用のデータ。日時は日本時間）",
+                "head": [
+                  "時刻",
+                  "出来事",
+                  "status",
+                  "updated_at"
+                ],
+                "data": [
+                  [
+                    "10/31 23:58",
+                    "注文確定。決済サービスがタイムアウト",
+                    "PENDING_PAYMENT",
+                    "10/31 23:58"
+                  ],
+                  [
+                    "11/01 00:10",
+                    "照合バッチが課金の記録を見つける",
+                    "PAID",
+                    "11/01 00:10"
+                  ],
+                  [
+                    "11/01 に 10 月分を出力",
+                    "10 月の CSV に出ない",
+                    "",
+                    ""
+                  ],
+                  [
+                    "11/05",
+                    "別の 10 月の注文（PAYMENT_FAILED）をもう一度確定",
+                    "PAID",
+                    "11/05"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "この流れだと、10 月 31 日に課金された注文が 11 月の CSV に入る。さらに、10 月の CSV を 11 月 5 日の前後で出し直すと、行が消える。同じ期間を指定しても、出力が後から変わる。",
+              "basis": "inferred"
+            },
+            {
+              "p": "コミットメッセージの用途は「経理の月次の突き合わせ」。経理が欲しいのは「いつ課金されたか」の可能性が高く、それは今の表には列として存在しない。`CART` の注文も行に含まれる。",
+              "basis": "fact"
+            },
+            {
+              "p": "コードの誤りというより仕様の問い。PR の説明か README に「最後の更新時刻で切る」「過去の期間も変わりうる」と書くか、`paid_at` を持つマイグレーションを別に起こすかを、依頼者と決める必要がある。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "同時実行・二重実行・途中の失敗・新旧の共存：確かめた場所",
+          "blocks": [
+            {
+              "table": {
+                "head": [
+                  "状況",
+                  "見た場所",
+                  "結果"
+                ],
+                "rows": [
+                  [
+                    "同じ要求が 2 回来る",
+                    "`exportOrdersCsv` は SELECT 1 本だけ",
+                    "読み取りだけなので、何度呼んでも書き込みは起きない"
+                  ],
+                  [
+                    "書き出し中に注文が更新される",
+                    "SELECT 1 本で全行を読む",
+                    "1 回の読み取りの中ではずれない。直後に更新された注文は次回に回る"
+                  ],
+                  [
+                    "途中で例外",
+                    "server.ts の try/catch",
+                    "500 を返すだけ。状態は何も変わらない"
+                  ],
+                  [
+                    "新旧のコードの共存",
+                    "差分にマイグレーションがない",
+                    "表の形は同じ。旧コードの照合バッチも同じ SQL で動く"
+                  ],
+                  [
+                    "照合バッチと同時に走る",
+                    "どちらも同じ `DatabaseSync` を同期で使う",
+                    "交互に動くだけで、互いを壊さない"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "この観点で危ない箇所は見つからなかった。読み取り専用の層（README の「読み取り専用」）に閉じていることが効いている。残るリスクは前の手順で見た 2 つ。照合バッチと同時に走るときも、大きな SELECT のあいだは他の処理が待たされる。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "まとめ",
+      "steps": [
+        {
+          "title": "シニアならこうコメントする",
+          "blocks": [
+            {
+              "quote": "[must] handlers/orderExport.ts:26 — ADMIN_TOKEN が未設定だと、ヘッダーなしの要求が通ります。`!deps.adminToken` のときは 401 にし、そのテストを足してください。可能なら createApp で未設定のときに起動を止め、Deps.adminToken を string にしたいです。\n[should] orderRepository.ts:10 — 照合バッチ用のメソッドに null と since を足すより、findUpdatedBetween を別に作りませんか。照合バッチの「必ず状態を絞る」を型で守れます。あわせて、updated_at の索引か期間の上限を検討してください（EXPLAIN QUERY PLAN の結果を PR に貼ってもらえると助かります）。\n[question] 経理の月次の突き合わせには「最後の更新時刻」で足りますか？ 月末の決済が照合バッチで翌月に動くことや、過去の月の CSV が後から変わることを、依頼者と確認したいです。\n[nit] InMemory 版も updatedAt の順で並べると、SQLite 版と振る舞いがそろいます。"
+            },
+            {
+              "list": [
+                "共有されたメソッドを変える変更では、元の持ち主（照合バッチ）とその索引を先に読んだ",
+                "照合バッチが出す SQL が同じ意味のままであること、既存のテストが書き換えられていないことを、差分で確かめた",
+                "日付の往復の検査や半開区間など、一見冗長なコードが何を守っているかを、テストの境界と結びつけた",
+                "`paymentKeyFor`、円の整数、handler のエラーの扱いといった書かれた決まりに、新しいコードが従っていることを、決まりが書かれた場所で確かめた",
+                "宣言（ADMIN_TOKEN を比べる）が実際に効くかを、設定を読む場所（`createApp`）までたどって、未設定のときの穴を見つけた",
+                "テストの名前どおりでも、穴の側を通っていないテストがあることを見た",
+                "「null ならすべて」のような意味の埋め込みを、別のメソッドという型で守る設計と比べた",
+                "列の意味（`updated_at` は最後の更新）を、依頼の目的（経理の月次）と突き合わせた"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

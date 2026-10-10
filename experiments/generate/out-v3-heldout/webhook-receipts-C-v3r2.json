@@ -1,0 +1,564 @@
+{
+  "version": 1,
+  "title": "決済の Webhook で決済中の注文を確定させる変更を、シニアの目で読む",
+  "base": "main",
+  "head": "feature/webhook-receipts",
+  "chapters": [
+    {
+      "title": "対象",
+      "steps": [
+        {
+          "title": "読む変更",
+          "blocks": [
+            {
+              "target": true
+            },
+            {
+              "quote": "決済サービスの Webhook で決済中の注文を確定させる\n注文確定の途中でタイムアウトすると、照合バッチが拾うまで最大 15 分ほど注文が決済中のまま残っていた。POST /webhooks/payment で charge.succeeded を受け取り、PENDING_PAYMENT の注文をすぐ PAID にする。\n- 署名を確かめてから本文を読む。鍵が未設定なら受け付けない\n- 同じイベントはイベント ID で 1 回だけ処理する。注文の更新が失敗したら記録せずに 500 を返し、決済サービスの送り直しに任せる\n- 課金の失敗では注文を変えず、これまでどおり照合バッチに判断を任せる"
+            },
+            {
+              "p": "コミットは 2 つある。1 つ目は署名の検証とイベントの記録という下準備で、2 つ目で受け口とつないでいる。コミットメッセージに「何を約束するか」が 3 つ箇条書きにしてある。このツアーでは、その 3 つが本当に守られているかを確かめていく。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "何のための変更か",
+      "steps": [
+        {
+          "title": "誰が何に困っていたか",
+          "blocks": [
+            {
+              "p": "行を読む前に、困っていた人を特定する。注文確定は、タイムアウトしたときに注文を `PENDING_PAYMENT` のまま残す。課金されたかどうかが、その時点では分からないからだ。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/orders/orderService.ts",
+                "at": "base",
+                "lines": [
+                  56,
+                  58
+                ],
+                "show": [
+                  51,
+                  59
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "照合バッチが拾うのは、更新から 10 分たった注文だけだ。バッチは 5 分ごとに動く（`src/server.ts` の `setInterval`）。だから最悪で約 15 分かかる。コミットメッセージの「最大 15 分」はこの足し算と合っている。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "at": "base",
+                "lines": [
+                  5,
+                  6
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "その間、購入者には 503 で「確認しています」と返る。もう一度確定を押しても、`PENDING_PAYMENT` は状態のチェックで 409 になる（`orderService.ts:33-35`、`checkout.ts:18-19`）。困っていたのは、タイムアウトに当たった購入者だ。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "仮説：Webhook は「決済中 → 確定」だけを担う",
+          "blocks": [
+            {
+              "p": "`PENDING_PAYMENT` という状態の意味は「課金されたか分からない」だ。分からない状態から出る道は、変更前は 2 本あった。",
+              "basis": "fact"
+            },
+            {
+              "pre": "            注文確定（checkout）\n CART ──────────────▶ PENDING_PAYMENT ──┬─▶ PAID           (確定/照合)\n                                        └─▶ PAYMENT_FAILED (拒否/照合)\n\n 今回の変更で足す道:\n PENDING_PAYMENT ──(Webhook: charge.succeeded)──▶ PAID"
+            },
+            {
+              "p": "ここで仮説を立てる。Webhook は「課金された」という確かな知らせだけを使って、`PENDING_PAYMENT → PAID` の 1 本だけを足す変更のはずだ。「課金されなかった」と決めるのは、決済サービスの記録を確かめる照合バッチの役目のまま残るはずだ。もし Webhook が `PAYMENT_FAILED` を書いていたら、この意味を壊していることになる。以降の章で、この仮説を確かめていく。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "全体の地図",
+      "steps": [
+        {
+          "title": "処理の流れと、時間の使い方",
+          "blocks": [
+            {
+              "pre": "決済サービス\n  │ POST /webhooks/payment  (x-payment-signature)\n  ▼\nserver.ts      本文を生のまま読む（64KB 上限 → 413）\n  ▼\nhandlePaymentWebhook\n  ├ 鍵なし         → 503\n  ├ 署名が合わない → 401   (webhookSignature.ts)\n  ├ JSON 不正      → 400\n  ├ events.has(id) → 200 duplicate  (payment_webhook_events)\n  ├ charge.succeeded → confirmCharge → orders.get / orders.save\n  └ events.record(id) → 200\n\n同じ orders 行を書くほかの処理（変更なし）:\n  OrderService.checkout / reconcilePendingPayments"
+            },
+            {
+              "p": "時間を使うのは `confirmCharge` と、記録する順番、それに同じ注文をほかの 2 つの処理と取り合うところだ。ここはお金と注文の状態に関わり、間違えても後から戻しにくい。",
+              "basis": "opinion"
+            },
+            {
+              "p": "短く済ませるのは次のところだ。署名の検証はよくある形なので、形からずれていないかだけを見る。`app.ts` の配線と README は機械的な追随だ。マイグレーションは新しいテーブルを足すだけで、既存の表には触れていない。",
+              "basis": "fact"
+            },
+            {
+              "schema": {
+                "migrations": "db/migrations",
+                "tables": [
+                  "payment_webhook_events"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "仕組み",
+      "steps": [
+        {
+          "title": "入口：鍵がなければ閉じる側に倒れる",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/handlers/paymentWebhook.ts",
+                "lines": [
+                  34,
+                  40
+                ]
+              }
+            },
+            {
+              "p": "鍵が未設定（`undefined` や空文字）なら、署名を見る前に 503 を返す。空の鍵で HMAC を計算すると、誰でも同じ署名を作れてしまう。テストは「空の鍵で作った正しい署名」を実際に送り、それでも 503 になって注文が変わらないことを確かめている（`test/paymentWebhook.test.ts:66-74`）。",
+              "basis": "fact"
+            },
+            {
+              "p": "宣言しただけで効いているとは限らないので、鍵を渡している場所も見る。`createApp` が `env.PAYMENT_WEBHOOK_SECRET` を読み、`server.ts` が `app.webhookSecret` をハンドラへ渡している。既定値は置いていない。だから設定を忘れると 503 になり、決済サービスの送り直しを待つ状態になる。開いた側には倒れない。",
+              "basis": "fact"
+            },
+            {
+              "diff": {
+                "file": "src/app.ts",
+                "hunks": [
+                  1
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "署名：型どおりかを確かめて短く済ませる",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/payment/webhookSignature.ts",
+                "lines": [
+                  25,
+                  31
+                ]
+              }
+            },
+            {
+              "p": "形からずれやすい点を順に見た。時刻は数字だけを受け付け、5 分を超えるずれは弾く。`<t>.<本文>` には JSON として読む前の生の本文を使っている（`server.ts:13-23`）。`timingSafeEqual` の前で長さを比べている。どれも抜けていなかった。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "test/webhookSignature.test.ts",
+                "lines": [
+                  11,
+                  12
+                ]
+              }
+            },
+            {
+              "p": "テストの期待値は、コメントによると openssl で別に作った値だ。本体と同じ `createHmac` の呼び方で期待値を作ると、計算の取り違えがあっても本体とテストが一緒に間違えるので気付けない。この値は本体と独立している。ただし、このツアーではテストを動かしていない。",
+              "basis": "fact"
+            },
+            {
+              "p": "ここは確かめたうえで「これで十分」とする。この章では深掘りしない。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "confirmCharge：仮説どおり 1 本の道だけ",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/handlers/paymentWebhook.ts",
+                "lines": [
+                  73,
+                  82
+                ],
+                "show": [
+                  64,
+                  83
+                ]
+              }
+            },
+            {
+              "p": "書き込むのは `PENDING_PAYMENT` のときだけだ。`PAID` は何もせずに通し、`chargeId` を上書きしない（`test/paymentWebhook.test.ts:76-80`）。`PAYMENT_FAILED` などは warn を出すだけだ。`charge.failed` も注文を変えない（`:82-87`）。前の章の仮説は確かめられた。",
+              "basis": "fact"
+            },
+            {
+              "p": "`PAYMENT_FAILED` の注文に `charge.succeeded` が来るのは「課金されたのに注文は失敗」という、お金が絡む食い違いだ。変更前は、これに気付く手段がまったくなかった。いまは少なくともログに残る。状態を勝手に戻さずに知らせるだけにした判断は、照合バッチの役目を奪わないので筋が通っている。",
+              "basis": "inferred"
+            },
+            {
+              "p": "ただし、`console.warn` は誰かが見に行かないと気付かれない。通知の仕組みはこのリポジトリにないので、いまは止める理由にはしない。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "記録の順番：落ちてもやり直せる",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/handlers/paymentWebhook.ts",
+                "lines": [
+                  59,
+                  60
+                ],
+                "show": [
+                  45,
+                  61
+                ]
+              }
+            },
+            {
+              "p": "注文を保存してからイベントを記録している。保存で例外が出れば記録まで進まない。`server.ts:40-43` が 500 を返し、決済サービスが送り直す。順番が逆だと、記録だけ残って注文が決済中のまま、という取りこぼしが起きる。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "test/paymentWebhook.test.ts",
+                "lines": [
+                  99,
+                  103
+                ],
+                "show": [
+                  89,
+                  104
+                ]
+              }
+            },
+            {
+              "p": "このテストは、保存が失敗したときに記録が残らないことと、送り直しで `PAID` になることの両方を確かめている。`record` を前に移すと、このテストが落ちる。",
+              "basis": "fact"
+            },
+            {
+              "p": "この章で確かめたこと：Webhook は「課金された」という知らせで決済中の注文だけを確定させ、処理しきれなかったイベントは送り直しに回す。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "キーから注文を逆引きする",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/orders/order.ts",
+                "lines": [
+                  13,
+                  28
+                ]
+              }
+            },
+            {
+              "p": "接頭辞を定数にして、`paymentKeyFor` とその逆関数で共有している。キーの形の知識が 1 か所にまとまり、`order-` の文字列を Webhook 側に書き写していない。往復のテストもある（`test/webhookSignature.test.ts`）。",
+              "basis": "fact"
+            },
+            {
+              "p": "これは形が似ているだけの共通化ではない。同じ知識をまとめた共通化だ。キーの形を変えると、作る側と読む側が一緒に変わる。",
+              "basis": "opinion"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "シニアならここで手が止まる",
+      "steps": [
+        {
+          "title": "同じイベントが同時に 2 本届いたら",
+          "question": true,
+          "blocks": [
+            {
+              "p": "決済サービスが同じ `charge.succeeded`（同じイベント ID）を、ほぼ同時に 2 本送ってきたとする。コミットメッセージには「イベント ID で 1 回だけ処理する」とある。"
+            },
+            {
+              "code": {
+                "file": "src/handlers/paymentWebhook.ts",
+                "lines": [
+                  45,
+                  60
+                ],
+                "show": [
+                  45,
+                  61
+                ]
+              }
+            },
+            {
+              "p": "2 本目の重複を弾いているのは、本当にイベント表だろうか？ 弾けなかったら何が起きるだろうか？"
+            }
+          ]
+        },
+        {
+          "title": "答え：本当の守り手は状態のチェック",
+          "blocks": [
+            {
+              "p": "`has` で調べ、処理し、`record` で書くという流れは不可分ではない。調べてから書くまでの間に、2 本目が `has` を通り抜ける余地がある。`record` の `ON CONFLICT DO NOTHING` は表の行が重複しないようにするだけで、処理が 2 回走るのは止めない。",
+              "basis": "fact"
+            },
+            {
+              "p": "それでも、いまは問題にならない。理由は 2 つある。1 つ目に、DB の呼び出しは `DatabaseSync` で同期的に終わるので、本文を読み終えてからの `await` は I/O を待たない。そのため、処理の途中に別の要求の処理が割り込まないと考えられる。",
+              "basis": "inferred"
+            },
+            {
+              "p": "2 つ目に、仮に割り込まれても、2 本目は `order.status` が `PAID` になっているのを見て何もしない（`paymentWebhook.ts:73-82`）。重複を実際に吸収しているのは、イベント表ではなく状態のチェックだ。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "test/paymentWebhook.test.ts",
+                "lines": [
+                  49,
+                  51
+                ],
+                "show": [
+                  46,
+                  56
+                ]
+              }
+            },
+            {
+              "p": "重複のテストが、わざわざ注文を決済中に戻しているのがその裏付けだ。戻さなければ状態のチェックが先に効いてしまい、イベント表の働きを確かめられない。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "イベント表の役割をどう評価するか",
+          "blocks": [
+            {
+              "p": "イベント表があっても今の振る舞いは壊れていない。ただし、言い方が中身より強い。マイグレーションのコメントにも「1 回だけ処理する」とあるが、実際の保証は「記録し終えたイベントは次から飛ばす」までだ。`record` が返す真偽値は、どこからも使われていない（`webhookEventStore.ts:5-6`、`paymentWebhook.ts:60`）。",
+              "basis": "fact"
+            },
+            {
+              "p": "怖いのは次の変更だ。返金のように、何度やると結果が変わる処理を足す人が「イベント表が 1 回にしてくれる」と信じると、二重に処理する穴ができる。名前や説明を信じすぎない読み方は、ここで効く。",
+              "basis": "inferred"
+            },
+            {
+              "p": "判断：止めるほどではない。イベント表は安い 2 枚目の守りで、重複したときのログも減らせる。直してほしいのは表ではなく、説明の言い方だ。「重複を吸収するのは状態の遷移。表は処理済みを飛ばす目印」とコメントに書いてもらう（Nit）。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "注文を書く処理が 3 つになった",
+          "blocks": [
+            {
+              "p": "`orders` の行を書く処理は、変更前は注文確定と照合バッチの 2 つだった。今回 Webhook が加わって 3 つになった。どれも「読む → 状態を変える → 行を丸ごと upsert」で、書く時点で状態を確かめ直していない。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/orders/sqliteOrderRepository.ts",
+                "at": "base",
+                "lines": [
+                  44,
+                  49
+                ],
+                "show": [
+                  39,
+                  52
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "pre": "照合バッチ                       Webhook\n読む: PENDING_PAYMENT\nfindCharge(...) を待つ  ……………  読む: PENDING_PAYMENT\n   (ネットワーク)                  PAID / ch_1 を保存\n結果で PAID か FAILED を保存  ← 古い読み取りで上書き"
+            },
+            {
+              "p": "照合バッチと注文確定は、外への呼び出しを待つ間ずっと古い注文を持っている。それでも結果が壊れないのは、どの処理も同じ決済サービスの事実から「PAID / 同じ charge_id」を書くからだ。食い違うのは、`findCharge` が見つけられない一方で Webhook が成功を知らせた場合だけになる。",
+              "basis": "inferred"
+            },
+            {
+              "snippet": {
+                "label": "このリポジトリにないコード：状態を DB で確かめながら書く案",
+                "lang": "typescript",
+                "text": "async markPaidIfPending(id: string, chargeId: string): Promise<boolean> {\n  const r = this.#db\n    .prepare(\n      `UPDATE orders SET status = 'PAID', charge_id = ?, updated_at = ?\n       WHERE id = ? AND status = 'PENDING_PAYMENT'`,\n    )\n    .run(chargeId, this.#now().toISOString(), id);\n  return r.changes === 1;\n}"
+              }
+            },
+            {
+              "p": "選ばなかった設計と比べる。条件付きの UPDATE にすれば、手順で守っている約束を DB で守れる。そのかわり、リポジトリのインターフェースが増え、照合バッチにも同じことをしたくなる。今回の変更が新しく作った穴ではないので、必須ではなく提案にとどめる。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "業務ロジックが handlers/ に入った",
+          "blocks": [
+            {
+              "code": {
+                "file": "README.md",
+                "lines": [
+                  16,
+                  18
+                ],
+                "show": [
+                  14,
+                  21
+                ]
+              }
+            },
+            {
+              "p": "README は handlers を「HTTP リクエストとの変換」と決めている。既存の `checkout.ts` は、例外を状態コードに変えるだけだ。一方、`confirmCharge` は注文の状態遷移という業務ロジックを、handlers の中で持っている。",
+              "basis": "fact"
+            },
+            {
+              "p": "`PENDING_PAYMENT → PAID` と `chargeId` の設定は、`orderService.ts:49-50`、`reconcilePendingPayments.ts:25-26`、`paymentWebhook.ts:74-75` の 3 か所に書かれることになった。",
+              "basis": "fact"
+            },
+            {
+              "p": "次に「確定日時を持たせる」という変更が来たら、3 か所を探して直す必要がある。少なくとも Webhook の分は、`OrderService` に `confirmPayment(orderId, chargeId)` として置くのが README の決まりに沿う（提案）。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "気にしそうだが、気にしなくてよいところ",
+          "blocks": [
+            {
+              "table": {
+                "head": [
+                  "気になる点",
+                  "判断",
+                  "理由"
+                ],
+                "rows": [
+                  [
+                    "Webhook の金額と注文の金額を比べていない",
+                    "これで十分",
+                    "冪等キーは注文ごとで、金額はこちらが課金時に送っている。注文確定も照合バッチも比べていない（fact）"
+                  ],
+                  [
+                    "イベント表が増え続ける",
+                    "今は不要",
+                    "1 イベントに 1 行で、主キーで引く。件数は注文数と同じ桁になる（inferred）"
+                  ],
+                  [
+                    "マイグレーション",
+                    "これで十分",
+                    "新しい表を足すだけで、既存の表のロックや書き換えはない（fact）"
+                  ],
+                  [
+                    "古いコードと新しいコードが同時に動く",
+                    "これで十分",
+                    "古いコードは 404 を返し、決済サービスが送り直すだけ。照合バッチという保険も残る（inferred）"
+                  ],
+                  [
+                    "署名つきだが形の壊れたイベントに 400 を返す",
+                    "問い",
+                    "送り直しても直らない。決済サービスが何回で諦めるかは、このリポジトリからは分からない"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "どれも、何が起きうるかと、そのときの被害を比べて決めた。何でも防御を足せばよいわけではない。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "テストは何を証明しているか",
+          "blocks": [
+            {
+              "table": {
+                "head": [
+                  "壊す行",
+                  "落ちるテスト"
+                ],
+                "rows": [
+                  [
+                    "`status === 'PENDING_PAYMENT'` の条件を外す",
+                    "確定済みの注文の課金 ID は書き換えない"
+                  ],
+                  [
+                    "`record` を `confirmCharge` の前に移す",
+                    "注文を保存できなかったイベントは記録せず…"
+                  ],
+                  [
+                    "`has` のチェックを消す",
+                    "同じイベントが送り直されても…"
+                  ],
+                  [
+                    "`!deps.secret` の判定を消す",
+                    "鍵が設定されていなければ受け付けない"
+                  ],
+                  [
+                    "HMAC の入力の形を変える",
+                    "決済サービスの署名を受け付ける（openssl の値）"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "表は、変更の肝心の行を 1 つずつ壊したら、どのテストが落ちるかを照らし合わせたものだ（動かしてはいない）。どのテストも呼び出しの順番ではなく、注文の状態や応答という結果を確かめている。既存のテストは変わっておらず、skip も増えていない。",
+              "basis": "fact"
+            },
+            {
+              "p": "足りないのは 2 つ。注文が見つからないときと、他社の課金キーが来たときの、ハンドラを通したテストがない。どちらも warn か何もしないだけなので、優先度は低い。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "まとめ",
+      "steps": [
+        {
+          "title": "シニアのコメント",
+          "blocks": [
+            {
+              "p": "全体としてコードベースは良くなった。購入者が待たされる時間が、最大 15 分から Webhook が届くまでに縮む。しかも「課金されなかったと決めるのは照合バッチ」という約束を崩していない。止める理由は見つからなかった。",
+              "basis": "inferred"
+            },
+            {
+              "list": [
+                "良い点：鍵がなければ 503、署名は生の本文と定数時間で比べる、更新してから記録する。どれも失敗したときに閉じる側・やり直せる側に倒れていて、テストで裏付けてある",
+                "提案：`confirmCharge` を `OrderService` に移し、README の層の決まりに合わせる。`PENDING→PAID` の遷移を書く場所を増やさない",
+                "提案：書く処理が 3 つになったので、`PENDING_PAYMENT` のときだけ更新する条件付き UPDATE を検討する（今回が作った穴ではない）",
+                "Nit：「イベント ID で 1 回だけ処理する」を「重複は状態の遷移で吸収し、表は処理済みを飛ばす目印」と書き直す。`record` の戻り値は使うか消す"
+              ]
+            }
+          ]
+        },
+        {
+          "title": "追体験したこと",
+          "blocks": [
+            {
+              "list": [
+                "行を読む前に、照合バッチの 10 分と 5 分から「最大 15 分」を確かめ、誰が困っていたかを言葉にした",
+                "状態の意味（PENDING_PAYMENT は分からない）から、Webhook がしてよいことを仮説にし、confirmCharge で確かめた",
+                "差分の外にある注文確定、照合バッチ、リポジトリの upsert を読んで、書く処理が 3 つになったことに気付いた",
+                "「1 回だけ処理する」という名前を信じず、同時に 2 本来たら何が守るのかを追った",
+                "署名や配線のように型どおりの部分は、ずれがないかだけを見て短く済ませた",
+                "気になる点ごとに、必須・提案・Nit・問い・これで十分のどれにするかを、被害の大きさで決めた"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

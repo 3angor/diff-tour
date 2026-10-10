@@ -24,7 +24,9 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOUR_REPO = os.path.abspath(os.path.join(HERE, '..', '..'))
-P = os.path.join(HERE, 'prompts', 'v2')
+# PROMPTS selects the prompt version (v2 by default; v3 is the catalog-based version)
+PROMPTS = os.environ.get('PROMPTS', 'v2')
+P = os.path.join(HERE, 'prompts', PROMPTS)
 MAX_FIX = 2
 SEP = '=== ツアー JSON ==='
 
@@ -105,7 +107,7 @@ def main():
     clone = os.path.join(root, 'clone')
     name = f'{branch}-{variant}-{tag}'
     work = os.path.join(root, 'runs', name)
-    out = os.path.join(HERE, 'out2')
+    out = os.path.join(HERE, os.environ.get('OUT', 'out2'))
     os.makedirs(out, exist_ok=True)
     if os.path.exists(work):
         shutil.rmtree(work)

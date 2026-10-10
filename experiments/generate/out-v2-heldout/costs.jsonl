@@ -1,0 +1,4 @@
+{"name": "order-export-C-v2r2", "cost": 0.745, "sec": 197, "fixes": 0, "final_ok": true}
+{"name": "order-export-C-v2r1", "cost": 0.853, "sec": 211, "fixes": 1, "final_ok": true}
+{"name": "webhook-receipts-C-v2r2", "cost": 0.9356, "sec": 251, "fixes": 0, "final_ok": true}
+{"name": "webhook-receipts-C-v2r1", "cost": 0.8693, "sec": 253, "fixes": 0, "final_ok": true}

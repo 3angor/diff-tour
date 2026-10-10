@@ -1,0 +1,19 @@
+- **変更前の約束（base）**
+  - 注文の状態には意味が決まっている。`PENDING_PAYMENT` は「課金されたか分からない」。`PAYMENT_FAILED` は「課金されていないと確かめた。もう一度注文確定してよい」。根拠は `src/orders/orderService.ts:33,37-40,56-57` と `src/jobs/reconcilePendingPayments.ts:28`。
+  - 注文確定は、課金の前に `PENDING_PAYMENT` を保存する（`orderService.ts:37-40`）。そのため、課金の結果が届いた時点で注文はかならず `PENDING_PAYMENT` 以降の状態にある。
+  - 照合バッチは、更新から 10 分たっていない `PENDING_PAYMENT` には触らない（`reconcilePendingPayments.ts:5-6`）。注文確定と照合バッチという 2 つの書き手を、**時間をずらして**分けている。
+  - `SqliteOrderRepository.save` は全部の列をそのまま上書きする（`sqliteOrderRepository.ts:39-51`）。後から書いた方が勝ち、状態の条件は付かない。状態遷移の約束は、DB の制約ではなくアプリの手順（get → 確認 → save）で守っている。DB の CHECK 制約が守るのは、状態の値の種類だけ（`001_create_orders.sql:6`）。
+  - 冪等キーは注文 ID からだけ作り、「必ずここで作る」と書いてある（`order.ts:13-19`）。試行ごとにキーを変えないので、何回目の試行でもキーは同じになる。
+  - マイグレーションは起動時に番号順に当たる（`db.ts:15-26`、README）。テストも `openDatabase(':memory:')` を通るので、同じように当たる。
+  - 層の分け方が README に書いてある。`handlers/` は「HTTP リクエストとの変換」、`orders/` は業務ロジック（README:16-18）。`checkout.ts` は `OrderService` に任せて、自分は変換だけをしている。
+- **変更（head）との突き合わせ**
+  - 既存の約束: `charge.succeeded` が書き換えるのは `PENDING_PAYMENT` → `PAID` だけ。`charge.failed` では `PAYMENT_FAILED` にしない（`paymentWebhook.ts:49-57,73-78`）。`PAYMENT_FAILED` の意味を守っている。既存のテストは 1 つも変わっていない。`paymentKeyFor` の出力も同じ（`order-${id}`）。
+  - 書き手の分離は破られている: Webhook は `PENDING_PAYMENT` の注文をいつでも書く。注文確定（課金を待つ最大 10 秒）や照合バッチ（`findCharge` の通信中）と重なりうる。上書き保存で後勝ちになる。今は書き込む値（`PAID`＋同じ課金）が一致するので、無害に見える（推測）。照合バッチの `findCharge` が null を返すと、`PAID` が `PAYMENT_FAILED` に戻る余地が残る（外部の振る舞いしだい）。
+  - 二重処理: `has` → 処理 → `record` の間は原子的ではない。同じイベントが同時に 2 つ届くと両方が処理する。それでも無害なのは、`confirmCharge` が状態を確かめるから。重複を本当に防いでいるのは状態の確認で、イベントの表ではない。`record` の戻り値は使われていない。重複のテスト（test:46-56）は、本番では起きない「PAID → PENDING」に巻き戻して確かめている。
+  - 途中の失敗: 注文の更新 → 記録の順にしている。保存に失敗すれば例外になり、`server.ts:40-43` が 500 を返す。送り直しで、処理がやり直される（test:89-104）。
+  - 黙って捨てる場合がある: `PAID` で課金 ID が違うとき、警告を出さない（`paymentWebhook.ts:79-82`、test:76-80）。`PAYMENT_FAILED` なのに成功イベントが来たときは `console.warn` を出すだけで、記録して 200 を返す。もう送り直されない。どちらも「1 つの注文に課金が 2 つある」「お金は取ったのに注文は失敗」の兆しになる。
+  - 慣習: `orderIdFromPaymentKey` は `paymentKeyFor` の隣に置き、接頭辞を共有している（`order.ts:13-28`）。`now` を注入する作りも既存の Repository と同じ。一方で、状態遷移の業務ロジック（`confirmCharge`）が `handlers/` に入っていて、README の層の分け方からずれる。前例として、`jobs/` にも業務ロジックがある。
+  - 接続や設定: `PAYMENT_WEBHOOK_SECRET` が未設定や空文字なら 503 になる（`app.ts:17`、`paymentWebhook.ts:34-37`）。マイグレーション 002 は起動時に自動で当たる。イベントの表は注文と同じ `db` を使う（`app.ts:16`）。URL は完全一致で比べるので、クエリが付くと 404 になる（`server.ts:26`）。ヘッダー名と署名の形式は決済サービス側の仕様なので、ここでは確かめられない。
+  - 型や制約の案: 条件付きの `UPDATE ... WHERE status='PENDING_PAYMENT'` にすれば、DB に遷移を守らせられる。注文の更新とイベントの記録を同じトランザクションに入れることもできる。どちらも選ばれていない。
+  - 機械的な変更: `app.ts` の組み立て、README、`order.ts` の接頭辞の定数への置き換え、`server.ts` の import。振る舞いは変えていない。
+  - その他: 本文の形が壊れた `charge.succeeded` に 400 を返すので、ずっと送り直される。イベントの表を消す処理はなく、増え続ける。

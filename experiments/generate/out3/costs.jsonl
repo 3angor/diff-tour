@@ -1,0 +1,6 @@
+{"name": "payment-retry-C-r2", "cost": 0.5121, "sec": 126, "fixes": 0, "final_ok": true}
+{"name": "daily-sales-C-r2", "cost": 0.5129, "sec": 145, "fixes": 0, "final_ok": true}
+{"name": "payment-retry-C-r1", "cost": 0.5558, "sec": 152, "fixes": 0, "final_ok": true}
+{"name": "daily-sales-C-r1", "cost": 0.5812, "sec": 177, "fixes": 0, "final_ok": true}
+{"name": "coupons-C-r1", "cost": 0.7613, "sec": 191, "fixes": 0, "final_ok": true}
+{"name": "coupons-C-r2", "cost": 0.7546, "sec": 204, "fixes": 0, "final_ok": true}

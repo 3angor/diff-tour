@@ -1,0 +1,595 @@
+{
+  "version": 1,
+  "title": "決済の Webhook で注文を確定する変更を、シニアの目で読む",
+  "base": "main",
+  "head": "feature/webhook-receipts",
+  "chapters": [
+    {
+      "title": "対象",
+      "steps": [
+        {
+          "title": "読む変更",
+          "blocks": [
+            {
+              "target": true
+            },
+            {
+              "quote": "注文確定の途中でタイムアウトすると、照合バッチが拾うまで最大 15 分ほど\n注文が決済中のまま残っていた。POST /webhooks/payment で charge.succeeded を\n受け取り、PENDING_PAYMENT の注文をすぐ PAID にする。"
+            },
+            {
+              "p": "コミットは 2 つある。1 つ目が署名の検証とイベントの記録という下準備で、2 つ目がそれを使って注文を確定させる本体になる。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "何のための変更か",
+      "steps": [
+        {
+          "title": "誰が何に困らなくなるか",
+          "blocks": [
+            {
+              "p": "注文確定で決済サービスがタイムアウトすると、利用者には「決済の結果を確認しています」と返る。注文は PENDING_PAYMENT のまま残る。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/handlers/checkout.ts",
+                "lines": [
+                  24,
+                  31
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "その注文を拾うのは照合バッチで、5 分ごとに起動し、更新から 10 分たった決済中の注文だけを見る。10 分と 5 分を足して、コミットメッセージにある「最大 15 分」になる。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "lines": [
+                  5,
+                  6
+                ],
+                "show": [
+                  5,
+                  11
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "この変更のあとは、決済サービスが課金の成功を知らせた時点で PAID になる。タイムアウトに当たった購入者が、15 分待たずに注文の確定を見られる。",
+              "basis": "fact"
+            },
+            {
+              "p": "最初の仮説：「Webhook の受け口を 1 つ足すだけで、既存のコードには触れない、外側に閉じた変更」。この仮説を持ったまま読み進め、あとで確かめる。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "全体の地図",
+      "steps": [
+        {
+          "title": "処理の流れと、注文を書く人",
+          "blocks": [
+            {
+              "pre": "決済サービス\n  │ POST /webhooks/payment（x-payment-signature）\n  ▼\nserver.ts  readBody（64KB まで、生の本文のまま）\n  ▼\nhandlePaymentWebhook\n  ├ 鍵なし → 503      ├ 署名が合わない → 401\n  ├ JSON が壊れている → 400\n  ├ 処理済みの ID → 200 duplicate\n  ├ charge.succeeded → confirmCharge\n  │     └ orders.get → PENDING なら PAID で save\n  └ events.record → 200"
+            },
+            {
+              "p": "流れを描いたら、注文の状態を書く人を並べる。差分の外にある注文確定と照合バッチも含める。",
+              "basis": "fact"
+            },
+            {
+              "table": {
+                "head": [
+                  "書く人",
+                  "いつ書くか",
+                  "何を書くか"
+                ],
+                "rows": [
+                  [
+                    "注文確定",
+                    "確定ボタンの直後（課金は最大 10 秒）",
+                    "PENDING → PAID / PAYMENT_FAILED"
+                  ],
+                  [
+                    "照合バッチ",
+                    "更新から 10 分以上たってから",
+                    "PENDING → PAID / PAYMENT_FAILED"
+                  ],
+                  [
+                    "Webhook（新）",
+                    "通知が届いたとき。いつでも",
+                    "PENDING → PAID"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "3 行目が増えたので、仮説が揺らぐ。外側に閉じた変更ではなく、既存の 2 人と同じ行を書き合う変更になる。時間の多くは、confirmCharge と既存の書き手との重なり、記録の順番に使う。配線、マイグレーション、README は、機械的かどうかを確かめてから短く済ませる。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "機械的な部分が本当に機械的かを確かめる",
+          "blocks": [
+            {
+              "diff": {
+                "file": "src/app.ts"
+              }
+            },
+            {
+              "p": "app.ts は、イベント表のストアを作り、環境変数の鍵をそのまま渡しているだけ。鍵がなければ undefined のまま handler に届き、そこで 503 になる。",
+              "basis": "fact"
+            },
+            {
+              "schema": {
+                "migrations": "db/migrations",
+                "tables": [
+                  "payment_webhook_events"
+                ]
+              }
+            },
+            {
+              "p": "マイグレーションは表を 1 つ足すだけで、orders には触れない。起動時にトランザクションの中で当てられる（src/db.ts:15-26）。",
+              "basis": "fact"
+            },
+            {
+              "p": "鍵を設定しなければ何も変わらない。表が残るだけなので、戻すのも簡単。出したあとのリスクは小さいと判断し、ここは短く済ませる。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "仕組み",
+      "steps": [
+        {
+          "title": "署名を確かめてから本文を読む",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/server.ts",
+                "lines": [
+                  13,
+                  22
+                ],
+                "show": [
+                  10,
+                  23
+                ]
+              }
+            },
+            {
+              "p": "本文は JSON として読まず、文字列のまま handler に渡している。JSON.parse は署名を確かめたあと（paymentWebhook.ts:41）にしか呼ばれない。本文の上限を超えたら 413 を返す。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/payment/webhookSignature.ts",
+                "lines": [
+                  25,
+                  31
+                ]
+              }
+            },
+            {
+              "p": "時刻の形を確かめ、5 分の窓を見て、長さをそろえてから timingSafeEqual で比べている。長さが違うと例外になることも、コメントで押さえている。",
+              "basis": "fact"
+            },
+            {
+              "p": "鍵が空のときは検証に進まず 503 を返す（paymentWebhook.ts:34-37）。空の鍵で HMAC を作った偽の署名を弾くテスト（test/paymentWebhook.test.ts:66-74）もある。",
+              "basis": "fact"
+            },
+            {
+              "p": "この入口に穴があれば、誰でも任意の注文を PAID にできる。一番重い防御なので、型どおりに書けていることを確かめる価値がある。そして確かに型どおりに書けている。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "注文を更新してから記録する",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/handlers/paymentWebhook.ts",
+                "lines": [
+                  59,
+                  60
+                ],
+                "show": [
+                  45,
+                  61
+                ]
+              }
+            },
+            {
+              "p": "confirmCharge の save が投げると、record に届かない。例外は server.ts:40-43 で 500 になり、決済サービスが送り直す。送り直しのときは has() が false なので、同じ更新をやり直す。",
+              "basis": "fact"
+            },
+            {
+              "p": "順番が逆なら、記録だけが残り、送り直しは duplicate として捨てられる。それでも注文は照合バッチが拾うので、壊れはしない。ただ、15 分待ちに戻ってしまい、この変更の目的が失われる。",
+              "basis": "inferred"
+            },
+            {
+              "p": "この順番は、test/paymentWebhook.test.ts:89-104 が固定している。save が失敗したら記録が残らないこと、そのあとの送り直しで PAID になることの 2 つを確かめている。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "同じ evt_1 が、ほぼ同時に 2 本届いたら？",
+          "question": true,
+          "blocks": [
+            {
+              "p": "has() と record() のあいだには await がいくつもある。決済サービスが同じイベントを続けて 2 本送り、2 本とも has() を false で通り抜けたら、注文とイベント表はどうなるだろうか？"
+            },
+            {
+              "code": {
+                "file": "src/handlers/paymentWebhook.ts",
+                "lines": [
+                  45,
+                  47
+                ],
+                "show": [
+                  45,
+                  60
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "答え：壊れない。守っているのはイベント表ではない",
+          "blocks": [
+            {
+              "pre": "要求 A                     要求 B\nhas(evt_1) → false\n                           has(evt_1) → false\nget o1 → PENDING\n                           get o1 → PENDING\nsave o1 PAID ch_1\n                           save o1 PAID ch_1\nrecord → true\n                           record → false（誰も見ない）"
+            },
+            {
+              "p": "2 本とも同じ PAID と ch_1 を書くので、結果は 1 本のときと変わらない。",
+              "basis": "inferred"
+            },
+            {
+              "p": "record は ON CONFLICT DO NOTHING なので、2 本目は false を返して終わる。その戻り値を呼び出し側（paymentWebhook.ts:60）は使っていない。",
+              "basis": "fact"
+            },
+            {
+              "p": "二重処理を実際に止めているのは、73 行の「PENDING_PAYMENT のときだけ」という確認のほう。テストも、注文をわざわざ決済中に戻して、ようやくイベント表の効果を見られるようにしている。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "test/paymentWebhook.test.ts",
+                "lines": [
+                  49,
+                  51
+                ],
+                "show": [
+                  46,
+                  56
+                ]
+              }
+            },
+            {
+              "p": "判断：イベント表は、いまは二重の防御になっている。返金のように、状態を見るだけでは 1 回にできないイベントを足すときに効いてくる。安く、コミットに意図も書いてあるので、やりすぎとは言わない。何度届いても結果が同じになる性質（冪等性）を、どの行が担っているかを知っておけば十分。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "冪等キーの逆変換を、同じ場所に置いた",
+          "blocks": [
+            {
+              "diff": {
+                "file": "src/orders/order.ts"
+              }
+            },
+            {
+              "p": "`order-` という接頭辞を定数にして、paymentKeyFor と orderIdFromPaymentKey の両方が使っている。既存のコメントに「必ずここで作る」とあり、その決まりに沿っている。",
+              "basis": "fact"
+            },
+            {
+              "p": "キーの形を変える人は、ここだけを見ればよい。キーを作る側と読む側が別のファイルにあると、片方だけが変わる事故が起きやすい。良い置き方。",
+              "basis": "opinion"
+            },
+            {
+              "p": "接頭辞が違うキーや、`order-` だけのキーは null になる。他のサービスの課金は、注文に触れずに記録だけされる（paymentWebhook.ts:66）。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "シニアならここで手が止まる",
+      "steps": [
+        {
+          "title": "変更前の住み分け：10 分ルール",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "lines": [
+                  17,
+                  31
+                ],
+                "show": [
+                  5,
+                  32
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "照合バッチは「まだ注文確定の処理中かもしれない」注文を避けている。書く 2 人を、時間で分けている。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/orders/sqliteOrderRepository.ts",
+                "lines": [
+                  44,
+                  49
+                ],
+                "show": [
+                  39,
+                  52
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "save は、読んだときの状態を条件にせず、全部の列を上書きする。",
+              "basis": "fact"
+            },
+            {
+              "p": "変更前は、時間で分けているので、この上書きでも足りていた。Webhook はその住み分けの外から、いつでも同じ行を書く。差分には出てこないが、約束の前提が変わった。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "照合バッチが問い合わせている最中に、Webhook が来たら？",
+          "question": true,
+          "blocks": [
+            {
+              "p": "照合バッチは、最初に決済中の注文の一覧を読み、1 件ずつ findCharge を await する（1 件あたり最大 10 秒）。その途中で Webhook が同じ注文を PAID にしたら、最後に残る状態は何だろうか？ findCharge の結果ごとに考えてみる。"
+            }
+          ]
+        },
+        {
+          "title": "答え：ほぼ収まる。ただし 1 つだけ上書きの道がある",
+          "blocks": [
+            {
+              "pre": "照合バッチ                     Webhook\n一覧を読む（o1: PENDING）\nfindCharge(order-o1) を待つ\n                               get o1 → PENDING\n                               save o1 PAID ch_1\nfindCharge → ch_1\nsave o1 PAID ch_1      … 同じ値で収まる\n\nfindCharge → null だったら\nsave o1 PAYMENT_FAILED … PAID を上書き"
+            },
+            {
+              "p": "findCharge が課金を見つければ、同じ冪等キーから同じ課金を引くので、同じ値で収まる。",
+              "basis": "inferred"
+            },
+            {
+              "p": "食い違うのは、Webhook が成功を知らせたのに、findCharge が null を返した場合だけ。このときお金は取れているのに、注文は PAYMENT_FAILED になる。",
+              "basis": "inferred"
+            },
+            {
+              "p": "決済サービスの検索が、課金の直後から一貫して見えるかどうかは、このリポジトリには書かれていない。",
+              "basis": "fact"
+            },
+            {
+              "p": "判断：起きる条件は狭い。ただ、お金が絡むので、見なかったことにはしない。重さは「提案」にする。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "直すなら、手順ではなく DB の条件で守る",
+          "blocks": [
+            {
+              "snippet": {
+                "label": "修正案（このリポジトリにないコード）",
+                "lang": "typescript",
+                "text": "/** PENDING_PAYMENT のときだけ移す。移せなければ false */\nasync settle(id: string, to: 'PAID' | 'PAYMENT_FAILED', chargeId?: string): Promise<boolean> {\n  const result = this.#db\n    .prepare(\n      `UPDATE orders SET status = ?, charge_id = ?, updated_at = ?\n       WHERE id = ? AND status = 'PENDING_PAYMENT'`,\n    )\n    .run(to, chargeId ?? null, this.#now().toISOString(), id);\n  return result.changes === 1;\n}"
+              }
+            },
+            {
+              "p": "照合バッチも Webhook も、これを通って状態を移すようにする。そうすれば、先に書いた方が勝ち、遅れた方は何もしない。「読んでから書く」の間に別の要求が入っても壊れなくなる（compare-and-set）。",
+              "basis": "opinion"
+            },
+            {
+              "p": "直す場所は OrderRepository の型と照合バッチになり、この変更の範囲を越える。この PR で止めずに、続きの課題として切り出すのが釣り合っている。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "お金が動いたのに注文が失敗のとき、warn だけ",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/handlers/paymentWebhook.ts",
+                "lines": [
+                  79,
+                  82
+                ],
+                "show": [
+                  64,
+                  83
+                ]
+              }
+            },
+            {
+              "p": "PENDING_PAYMENT でも PAID でもない注文に成功が届くと、console.warn を出す。そのあと記録して 200 を返すので、このイベントは二度と処理されない。",
+              "basis": "fact"
+            },
+            {
+              "p": "これが起きるのは、さっきの上書きか、決済サービス側の食い違いのとき。つまり「課金されたのに注文は失敗」という、利用者から問い合わせが来る状態になる。",
+              "basis": "inferred"
+            },
+            {
+              "p": "照合バッチが決めた PAYMENT_FAILED を、別の経路が黙って覆さない。勝手に PAID にしないこの判断は筋が通っている。ただ、知らない注文の warn（70 行）と同じ重さのログでは、人が気付かない。error で出すか、監視に拾わせる形を「提案」する。",
+              "basis": "opinion"
+            },
+            {
+              "p": "同じく、鍵が未設定で 503 を返すときもログが出ない（34-37 行）。気付けるのは決済サービス側の画面だけになる。Nit として添える。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "5 分の窓と、送り直しに任せる設計",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/payment/webhookSignature.ts",
+                "lines": [
+                  26,
+                  26
+                ],
+                "show": [
+                  3,
+                  9
+                ]
+              }
+            },
+            {
+              "p": "署名の時刻が 5 分を超えてずれると 401 になる。一方 handler は、処理できなければ 500 を返し、決済サービスの送り直しに任せる（paymentWebhook.ts:29-31）。",
+              "basis": "fact"
+            },
+            {
+              "p": "送り直しのたびに新しい時刻で署名し直すなら問題はない。最初の署名のまま送ってくるなら、5 分を過ぎた送り直しはすべて 401 になり、「送り直しに任せる」が成り立たなくなる。",
+              "basis": "inferred"
+            },
+            {
+              "p": "決済サービスがどちらの振る舞いをするかは、このリポジトリからは確かめられない。",
+              "basis": "fact"
+            },
+            {
+              "p": "判断：コードの欠陥とは言えないので「問い」にする。仕様書で確かめ、その結果をコメントに 1 行残してほしいと頼む。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "気にしそうだが、気にしなくてよいもの",
+          "blocks": [
+            {
+              "p": "以下は確かめたうえで、止めなくてよいと判断したもの。",
+              "basis": "inferred"
+            },
+            {
+              "list": [
+                "has と record が一続きでない：同時に 2 本届いても、同じ値を書くだけ（前の章の答え）",
+                "金額を照合していない：課金は自分たちが冪等キーを付けて作ったもの。照合バッチも金額は見ていない（reconcilePendingPayments.ts:23-26）。既存と同じ水準",
+                "イベント表が増え続ける：1 課金に数行で、検索は主キー。この規模では問題にならない",
+                "本文を UTF-8 の文字列に戻してから HMAC を取る：JSON は UTF-8 なので実害はない。コメントの「バイト列そのもの」とは少しずれる（Nit）",
+                "新しい依存：node:crypto と node:sqlite だけで、外部のパッケージは増えていない"
+              ]
+            }
+          ]
+        },
+        {
+          "title": "テストは何を証明しているか",
+          "blocks": [
+            {
+              "table": {
+                "head": [
+                  "壊す行",
+                  "落ちるテスト"
+                ],
+                "rows": [
+                  [
+                    "73 行の PENDING 確認を外す",
+                    "確定済みの注文の課金 ID は書き換えない"
+                  ],
+                  [
+                    "record を更新の前に動かす",
+                    "注文を保存できなかったイベントは記録せず…"
+                  ],
+                  [
+                    "45 行の has() を外す",
+                    "同じイベントが送り直されても…（注文を戻す細工で効く）"
+                  ],
+                  [
+                    "署名の比較を常に true にする",
+                    "署名が合わない… / 本文・鍵・署名のどれかが違えば…"
+                  ],
+                  [
+                    "34 行の鍵の確認を外す",
+                    "鍵が設定されていなければ受け付けない"
+                  ]
+                ]
+              }
+            },
+            {
+              "code": {
+                "file": "test/webhookSignature.test.ts",
+                "lines": [
+                  11,
+                  12
+                ],
+                "show": [
+                  8,
+                  16
+                ]
+              }
+            },
+            {
+              "p": "署名の正解は openssl で作った固定の値で、本体と同じ計算で期待値を作っていない。肝心の行は、どれを壊してもテストが落ちる。",
+              "basis": "fact"
+            },
+            {
+              "p": "テストがないのは、server.ts の経路（413、ヘッダー名）と、照合バッチとの重なりの 2 つ。前者は小さく、後者は直し方を決めたときに一緒に足すのがよい。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "まとめ",
+      "steps": [
+        {
+          "title": "この変更は、コードベースを良くしたか",
+          "blocks": [
+            {
+              "p": "良くした。入口の防御、失敗したときの順番、キーの置き場所が丁寧で、テストもそれを固定している。照合バッチとの重なりは変更前の前提が生んだもので、起きる条件も狭い。この PR を止める理由にはならない。",
+              "basis": "opinion"
+            },
+            {
+              "list": [
+                "良い点：署名を確かめてから解析し、空の鍵は 503、更新→記録の順をテストで固定している。お金の入口として欠けがない",
+                "提案：照合バッチと Webhook が同じ注文を書き合う。状態の移り方を「PENDING_PAYMENT のときだけ」と UPDATE の条件で守る形を、続きの課題にしたい",
+                "問い：決済サービスは送り直しのたびに署名し直すか。最初の署名のままなら、5 分の窓が送り直しを全部弾く",
+                "提案：PAYMENT_FAILED の注文に成功が届いたら、warn ではなく人が気付ける形で残したい。課金されたのに注文が失敗、という状態だから"
+              ]
+            }
+          ]
+        },
+        {
+          "title": "追体験したこと",
+          "blocks": [
+            {
+              "list": [
+                "「外側に閉じた変更」という仮説を立て、注文を書く人を表にしたことで、仮説を「3 人目の書き手を足す変更」に直した",
+                "差分にない照合バッチの 10 分ルールと、条件なしの save を読みに行って、変更前の約束が手順と時間で守られていたことを見つけた",
+                "同時に 2 本、問い合わせの最中に Webhook、という具体的な順番で追い、収まる場合と収まらない場合を分けた",
+                "二重処理を本当に止めている行は、イベント表ではなく状態の確認だと突き止めた",
+                "指摘に重さを付け、良い点、提案、問いに分けた。範囲を越える直し方は、この PR を止めずに切り出した"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
