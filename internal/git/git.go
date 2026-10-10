@@ -3,6 +3,7 @@
 package git
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"regexp"
@@ -175,4 +176,105 @@ func nonEmpty(ss []string) []string {
 		}
 	}
 	return out
+}
+
+// RevParse は参照をコミットのハッシュにする。解決できなければ空文字。
+func (r *Repo) RevParse(ref string) string {
+	out := r.run("rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	if out == nil {
+		return ""
+	}
+	return strings.TrimSpace(*out)
+}
+
+// CurrentBranch は今いるブランチの名前。ブランチにいなければ空文字。
+func (r *Repo) CurrentBranch() string {
+	out := r.run("symbolic-ref", "--quiet", "--short", "HEAD")
+	if out == nil {
+		return ""
+	}
+	return strings.TrimSpace(*out)
+}
+
+// DefaultBranch は変更の比べ先にするブランチ。origin の HEAD が指すもの、なければ main・master などのうち存在するもの。
+func (r *Repo) DefaultBranch() string {
+	if out := r.run("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); out != nil {
+		name := strings.TrimPrefix(strings.TrimSpace(*out), "origin/")
+		if r.RevParse(name) != "" {
+			return name
+		}
+		return "origin/" + name
+	}
+	for _, name := range []string{"main", "master", "trunk", "develop"} {
+		if r.RevParse(name) != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+type Branch struct {
+	Name      string
+	Committed int64 // 最後のコミットの時刻（UNIX 秒）
+	Subject   string
+}
+
+// Branches はローカルのブランチを、最後のコミットが新しい順に返す。
+func (r *Repo) Branches() []Branch {
+	out := r.run("for-each-ref", "--sort=-committerdate", "--format=%(refname:short)%09%(committerdate:unix)%09%(subject)", "refs/heads/")
+	if out == nil {
+		return nil
+	}
+	var branches []Branch
+	for _, l := range nonEmpty(strings.Split(*out, "\n")) {
+		parts := strings.SplitN(l, "\t", 3)
+		if len(parts) < 3 {
+			continue
+		}
+		ts, _ := strconv.ParseInt(parts[1], 10, 64)
+		branches = append(branches, Branch{parts[0], ts, parts[2]})
+	}
+	return branches
+}
+
+// Ahead は head にあって base にないコミットの数。
+func (r *Repo) Ahead(base, head string) int {
+	out := r.run("rev-list", "--count", base+".."+head)
+	if out == nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(*out))
+	return n
+}
+
+// RawDiff は base の分岐点から head までの差分をそのまま返す。
+func (r *Repo) RawDiff(base, head string) string {
+	out := r.run("diff", "--no-color", "--no-ext-diff", base+"..."+head)
+	if out == nil {
+		return ""
+	}
+	return *out
+}
+
+// CommitMessages は base になくて head にあるコミットのメッセージ（本文つき）。
+func (r *Repo) CommitMessages(base, head string) string {
+	out := r.run("log", "--format=%h %s%n%n%b", base+".."+head)
+	if out == nil {
+		return ""
+	}
+	return *out
+}
+
+// Archive はある時点の全ファイルを tar で返す。読むだけで、リポジトリには何も書かない。
+func (r *Repo) Archive(ref string) (io.ReadCloser, func() error, error) {
+	cmd := exec.Command("git", "-C", r.Dir, "archive", "--format=tar", ref)
+	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, nil, err
+	}
+	return out, cmd.Wait, nil
 }

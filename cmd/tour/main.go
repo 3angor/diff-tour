@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/DaiAoki/tour/internal/config"
+	"github.com/DaiAoki/tour/internal/generate"
 	"github.com/DaiAoki/tour/internal/git"
 	"github.com/DaiAoki/tour/internal/i18n"
 	"github.com/DaiAoki/tour/internal/render"
@@ -18,8 +20,12 @@ import (
 )
 
 const usage = `usage:
-  tour <tour.json> [--repo <path>] [--lang en|ja]
-  tour setup
+  tour                      choose a branch and tour it
+  tour <branch>             tour a branch (compared with the default branch)
+  tour <commit>             tour a single commit
+  tour <base>..<head>       tour a range
+  tour <tour.json>          play a tour file
+  tour setup                choose the language and the LLM again
 
 options:
   --repo <path>   repository to read (default: current directory)
@@ -83,7 +89,7 @@ func run(args []string) error {
 	if len(positional) == 1 && positional[0] == "setup" {
 		return runSetup(cfg)
 	}
-	if len(positional) != 1 {
+	if len(positional) > 1 {
 		fs.Usage()
 		os.Exit(2)
 	}
@@ -101,19 +107,32 @@ func run(args []string) error {
 	}
 	i18n.Set(lang)
 
-	t, err := tour.Load(positional[0])
-	if err != nil {
-		return err
-	}
 	dir, err := filepath.Abs(*repoDir)
 	if err != nil {
 		return err
 	}
-	ctx := render.Ctx{Tour: t, Repo: git.Open(dir)}
+	repo := git.Open(dir)
 
-	if *dump {
-		fmt.Print(ui.Dump(ctx, *cols, *rows, *plain))
-		return nil
+	// ツアーのファイルを再生する
+	if len(positional) == 1 && strings.HasSuffix(positional[0], ".json") {
+		t, err := tour.Load(positional[0])
+		if err != nil {
+			return err
+		}
+		ctx := render.Ctx{Tour: t, Repo: repo}
+		if *dump {
+			fmt.Print(ui.Dump(ctx, *cols, *rows, *plain))
+			return nil
+		}
+		if !isTerminal() {
+			return fmt.Errorf("%s", i18n.T("needTTY"))
+		}
+		_, err = tea.NewProgram(ui.NewViewer(ctx)).Run()
+		return err
+	}
+
+	if repo.RevParse("HEAD") == "" {
+		return fmt.Errorf("%s", i18n.T("err.notRepo", dir))
 	}
 	if !isTerminal() {
 		return fmt.Errorf("%s", i18n.T("needTTY"))
@@ -130,8 +149,70 @@ func run(args []string) error {
 		}
 		i18n.Set(lang)
 	}
-	_, err = tea.NewProgram(ui.NewViewer(ctx)).Run()
+	backend, err := backendFor(cfg.LLM)
+	if err != nil {
+		return err
+	}
+
+	var app *ui.App
+	if len(positional) == 0 {
+		base := repo.DefaultBranch()
+		if base == "" {
+			return fmt.Errorf("%s", i18n.T("err.noBase"))
+		}
+		app = ui.NewPicker(repo, base, lang, backend)
+	} else {
+		base, head, err := resolve(repo, positional[0])
+		if err != nil {
+			return err
+		}
+		app = ui.NewGenerating(repo, base, head, lang, backend)
+	}
+	_, err = tea.NewProgram(app).Run()
 	return err
+}
+
+// resolve は引数を、比べる 2 つのコミットにする。
+//
+//	a..b / a...b   a の分岐点から b まで
+//	ブランチ名     既定のブランチから、そのブランチまで
+//	コミット       そのコミット 1 つ（親から、そのコミットまで）
+func resolve(repo *git.Repo, arg string) (string, string, error) {
+	if base, head, ok := strings.Cut(strings.Replace(arg, "...", "..", 1), ".."); ok {
+		for _, r := range []string{base, head} {
+			if repo.RevParse(r) == "" {
+				return "", "", fmt.Errorf("%s", i18n.T("err.badRef", r))
+			}
+		}
+		return base, head, nil
+	}
+	if repo.RevParse("refs/heads/"+arg) != "" {
+		base := repo.DefaultBranch()
+		if base == "" {
+			return "", "", fmt.Errorf("%s", i18n.T("err.noBase"))
+		}
+		return base, arg, nil
+	}
+	if repo.RevParse(arg) == "" {
+		return "", "", fmt.Errorf("%s", i18n.T("err.badRef", arg))
+	}
+	return arg + "^", arg, nil
+}
+
+func backendFor(llm string) (generate.Backend, error) {
+	switch llm {
+	case "claude-code":
+		return generate.ClaudeCode{}, nil
+	case "":
+		return nil, fmt.Errorf("%s", i18n.T("err.noLLM"))
+	}
+	name := llm
+	for _, o := range ui.DetectLLMs() {
+		if o.ID == llm {
+			name = o.Name
+		}
+	}
+	return nil, fmt.Errorf("%s", i18n.T("err.unsupported", name))
 }
 
 func runSetup(current *config.Config) error {
@@ -157,6 +238,5 @@ func runSetup(current *config.Config) error {
 	}
 	i18n.Set(s.Lang())
 	fmt.Println(i18n.T("setup.saved", path))
-	fmt.Println(i18n.T("setup.notYet"))
 	return nil
 }

@@ -2,7 +2,7 @@
 
 **English** | [日本語](README.ja.md)
 
-> Status: early prototype. It plays back hand-written tours. Generating tours with an LLM is not implemented yet.
+> Status: early prototype. Tours are written by [Claude Code](https://claude.com/claude-code) for now; other LLMs are planned.
 
 AI can write code that works, but it does not teach you *why* the code is written that way.
 `tour` walks you through a change the way a senior engineer would read it: what the change does to the behavior of the whole system, which existing code it depends on (even files that did not change), why a seemingly redundant line is there, and where a senior would stop and say "wait".
@@ -11,13 +11,26 @@ You only need two keys: **→** next and **←** back.
 
 ## Try it
 
-Requires Go 1.27 and git.
+Requires Go 1.27, git, and [Claude Code](https://claude.com/claude-code) (`claude`) signed in.
 
 ```sh
-go run ./cmd/tour tours/payment-retry.json --repo path/to/tour-sample-shop
+go install github.com/DaiAoki/tour/cmd/tour@latest
+cd your-repo
+tour
 ```
 
-On the first run, `tour` asks two things: the language (detected from your terminal, English by default) and the LLM that will write tours. Run `tour setup` to change them later.
+On the first run, `tour` asks two things: the language (detected from your terminal, English by default) and the LLM that writes tours. Run `tour setup` to change them later.
+
+Then pick the change to tour. Your current branch is selected, so you can just press Enter.
+Writing a tour takes a few minutes; you can watch which files are being read. The tour is saved, so opening it again is instant.
+
+| Command | Tours |
+| --- | --- |
+| `tour` | a branch you choose, compared with the default branch |
+| `tour <branch>` | that branch |
+| `tour <commit>` | that single commit |
+| `tour <base>..<head>` | that range |
+| `tour <file>.json` | a tour file (for example `tours/payment-retry.json`) |
 
 | Key | Action |
 | --- | --- |
@@ -40,7 +53,10 @@ Every explanation is labeled with how it is known: **Verified** (backed by code,
 
 ## Read-only by design
 
-`tour` never writes to your working tree or `.git`. When you open a file that differs from the commit being toured, it opens a read-only copy under your cache directory instead.
+`tour` never writes to your working tree or `.git`.
+
+- To write a tour, it exports the files before and after the change to your cache directory and runs Claude Code there with read-only tools only (`Read`, `Grep`, `Glob`; no shell, no web). The code of the change is sent to the LLM you chose.
+- When you open a file that differs from the commit being toured, it opens a read-only copy under your cache directory instead.
 
 ## Development
 

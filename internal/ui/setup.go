@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -46,20 +47,34 @@ func DetectLLMs() []LLMOption {
 			ollama.Available, ollama.Status = true, "setup.found"
 		}
 	}
-	return []LLMOption{
+	options := []LLMOption{
 		command("claude-code", "Claude Code", "claude"),
 		command("codex", "Codex CLI", "codex"),
 		apiKey("anthropic-api", "Anthropic API", "ANTHROPIC_API_KEY"),
 		apiKey("openai-api", "OpenAI API", "OPENAI_API_KEY"),
 		ollama,
 	}
+	// いまツアーを作れるのは Claude Code だけ。ほかは見つかっても選べないようにして、そう伝える
+	for i := range options {
+		if options[i].ID != "claude-code" {
+			options[i].Status = options[i].Status + "|setup.unsupported"
+			options[i].Available = false
+		}
+	}
+	return options
 }
 
+// statusText は "setup.found|setup.unsupported" のような状態を文言にする。
 func statusText(s string) string {
-	if len(s) > len("setup.noKey:") && s[:len("setup.noKey:")] == "setup.noKey:" {
-		return i18n.T("setup.noKey", s[len("setup.noKey:"):])
+	var parts []string
+	for _, key := range strings.Split(s, "|") {
+		if env, ok := strings.CutPrefix(key, "setup.noKey:"); ok {
+			parts = append(parts, i18n.T("setup.noKey", env))
+		} else {
+			parts = append(parts, i18n.T(key))
+		}
 	}
-	return i18n.T(s)
+	return strings.Join(parts, " · ")
 }
 
 // Setup は初回に言語と LLM を選ぶ画面。推奨が選ばれた状態で、Enter だけで進める。
