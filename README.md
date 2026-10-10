@@ -4,70 +4,261 @@ Walk through a diff the way a senior engineer reads it.
 
 **English** | [日本語](README.ja.md)
 
+[![Release](https://img.shields.io/github/v/release/init-co-jp/diff-tour)](https://github.com/init-co-jp/diff-tour/releases)
+[![CI](https://github.com/init-co-jp/diff-tour/actions/workflows/ci.yml/badge.svg)](https://github.com/init-co-jp/diff-tour/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 ![tour walking through a change that adds coupons](demo/demo-en.gif)
 
-> Status: early prototype. Tours are written by [Claude Code](https://claude.com/claude-code) for now; other LLMs are planned.
+<sub>A tour of <a href="https://github.com/init-co-jp/diff-tour-example/tree/feature/coupons">a branch that adds coupons</a>: the schema change, a question to think about, and the answer: applying a coupon twice uses it up twice.</sub>
 
-AI can write code that works, but it does not teach you *why* the code is written that way.
-`tour` walks you through a change the way a senior engineer would read it: what the change does to the behavior of the whole system, which existing code it depends on (even files that did not change), why a seemingly redundant line is there, and where a senior would stop and say "wait".
+> [!NOTE]
+> diff-tour is an early release. The tour format and the screens may still change.
 
-You only need two keys: **→** next and **←** back.
+## What it is
 
-## Try it
+AI can write code that works. It does not teach you *why* the code is written that way, or what a reviewer would worry about.
 
-Requires git and [Claude Code](https://claude.com/claude-code) (`claude`) signed in.
+`tour` turns a git change into a guided tour you step through with two keys, **→** and **←**. The tour shows what a senior engineer looks at when they read the change:
 
-Download the archive for your OS from [Releases](https://github.com/init-co-jp/diff-tour/releases), and put `tour` on your `PATH`. Or, with Go 1.27 or later:
+- what the change does to the behavior of the whole system, not only the lines that changed
+- the existing code it relies on, including files that did not change
+- why a line that looks redundant is there, and what an error handler protects against
+- where a senior would stop and say "wait", asked as a question before the answer is shown
+
+The tour is written by an LLM you already use: Claude Code, Codex CLI or Gemini CLI. `tour` is read-only. It never changes your files or your repository.
+
+## How it works
+
+```text
+ your repository                          cache directory (deleted after writing)
+ ───────────────                          ──────────────────────────────────────
+ git archive <base>  ──────────────────▶  base/          files before the change
+ git archive <head>  ──────────────────▶  head/          files after the change
+ git diff            ──────────────────▶  change.diff
+ git log             ──────────────────▶  commits.txt
+                                                 │
+                                                 ▼
+                      Claude Code / Codex / Gemini, started in that directory
+                      with read-only permissions. It reads, then writes the
+                      tour as JSON.
+                                                 │
+                                                 ▼
+ tour checks every file and line the JSON points to. If something is wrong,
+ it asks the LLM to fix only that (up to 2 times). The tour is saved.
+                                                 │
+                                                 ▼
+ tour shows the tour. The code on screen is read from git at the right commit,
+ never copied from the LLM's reply.
+```
+
+1. **Export.** `tour` reads your repository with `git archive`, `git diff` and `git log`, and writes the files into a new directory in your cache. Only files that git tracks are exported. When you tour uncommitted changes, untracked files that are not ignored are exported too. Files in `.gitignore`, such as `.env`, are never exported.
+2. **Write.** `tour` starts the LLM's command-line tool in that directory with a fixed prompt and read-only permissions (see below). This takes 2 to 5 minutes, and the screen shows which files the LLM is reading.
+3. **Check.** The tour is JSON that points to files and line numbers. `tour` checks that each one exists, and sends mistakes back to the LLM to fix, at most twice.
+4. **Show.** Code, diffs and schemas on screen come from git, so the code you see is always the real code at that commit. Code that is not in the repository, such as a naive version or a possible fix, is always labeled **Example**.
+
+The export directory is deleted once the tour is written. The finished tour is saved in your cache, so opening it again is instant.
+
+## What the LLM can and cannot do
+
+Sending your code to an LLM is a real decision, so here is exactly what happens.
+
+**Sent to the LLM you chose:**
+
+- the files of your repository at the two commits being compared, the diff, and the commit messages. Only tracked files, plus untracked files that are not ignored when you tour uncommitted changes
+- the prompt in [`internal/generate/prompts`](internal/generate/prompts)
+
+They go to the provider of that tool (Anthropic, OpenAI or Google), under the terms of your account with them. `tour` itself makes no network requests, has no server, and collects no telemetry.
+
+**Not possible for the LLM:**
+
+- reading files outside the export directory, including your real working tree, `.git` and your home directory
+- reading files ignored by `.gitignore`, because they are never exported
+- writing, editing or deleting any file
+- running commands that change anything, or reaching the network
+- using MCP servers, plugins, extensions or web search
+
+This is enforced by the flags `tour` passes to each tool, not only by the prompt.
+
+<details>
+<summary><b>Claude Code</b>: tools limited to Read, Grep and Glob</summary>
+
+```text
+claude -p --restricted --strict-mcp-config --tools Read,Grep,Glob
+       --permission-mode dontAsk --permission-prompts none --no-session-persistence
+```
+
+- `--restricted` removes the command and web tools, and keeps file tools inside the working directory
+- `--strict-mcp-config` loads no MCP servers
+- `--tools Read,Grep,Glob` leaves only the three read-only tools
+- `--permission-mode dontAsk` refuses anything that would need permission, without asking
+- `--no-session-persistence` saves no session
+
+Source: [`internal/generate/claude.go`](internal/generate/claude.go)
+</details>
+
+<details>
+<summary><b>Codex CLI</b>: a sandbox that can only read the export directory</summary>
+
+Codex reads files by running commands such as `cat` and `rg`, so the protection is the sandbox those commands run in. `tour` defines its own permission profile on the command line. Commands may read the export directory and system paths such as `/usr` and `/etc`. Nothing is writable, and the network is off.
+
+- `--ignore-user-config` and `--ignore-rules` skip your `~/.codex` settings and rules, so your MCP servers and plugins are not loaded
+- `-c approval_policy="never"` makes blocked actions fail instead of asking
+- `-c web_search="disabled"` and `--disable` for apps, plugins, multi_agent, browser_use and others remove web search, connectors, sub-agents and browser tools
+- `--ephemeral` and `-c history.persistence="none"` save no session or history
+
+Tested on Linux, where Codex uses bubblewrap. On macOS, Codex uses its Seatbelt sandbox instead, which is not tested yet.
+Source: [`internal/generate/codex.go`](internal/generate/codex.go)
+</details>
+
+<details>
+<summary><b>Gemini CLI</b>: an admin policy that allows only four read tools</summary>
+
+- `--admin-policy` points to a temporary file that allows `read_file`, `glob`, `grep_search` and `list_directory` only inside the export directory, and denies every other tool. Admin policies take priority over your own policies.
+- Temporary settings in the export directory register only those four tools, and turn off MCP discovery, sub-agents, hooks, checkpoints and telemetry.
+- `--extensions none` loads no extensions. `--allowed-mcp-server-names` is set to a name no server has, so no MCP server starts.
+
+Gemini CLI always saves the session to `~/.gemini/tmp`, and deletes it after 30 days by default. This cannot be turned off from the command line.
+Source: [`internal/generate/gemini.go`](internal/generate/gemini.go)
+</details>
+
+The LLM still reads your code, so text in the code can try to steer what it writes (prompt injection). With these permissions it cannot act on that. Still, a tour is an explanation, not a guarantee: check what it says against the code it shows.
+
+## Install
+
+**macOS and Linux**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/init-co-jp/diff-tour/main/install.sh | sh
+```
+
+This downloads the latest release for your OS and CPU, checks it against `checksums.txt`, and puts `tour` in `~/.local/bin`. If that directory is not on your `PATH`, it prints the line to add. To choose the place or the version:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/init-co-jp/diff-tour/main/install.sh | TOUR_INSTALL_DIR=/usr/local/bin TOUR_VERSION=v0.1.0 sh
+```
+
+**With Go 1.27 or later** (any OS)
 
 ```sh
 go install github.com/init-co-jp/diff-tour/cmd/tour@latest
 ```
 
-Then:
+This puts `tour` in `$(go env GOPATH)/bin`, usually `~/go/bin`.
+
+**Windows** (PowerShell; not tested on Windows yet)
+
+```powershell
+$tag = (Invoke-RestMethod https://api.github.com/repos/init-co-jp/diff-tour/releases/latest).tag_name
+$zip = "diff-tour_$($tag.TrimStart('v'))_windows_amd64.zip"
+$dir = "$env:LOCALAPPDATA\Programs\tour"
+Invoke-WebRequest "https://github.com/init-co-jp/diff-tour/releases/download/$tag/$zip" -OutFile "$env:TEMP\$zip"
+Expand-Archive "$env:TEMP\$zip" -DestinationPath $dir -Force
+[Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";$dir", "User")
+```
+
+Open a new terminal afterwards. On ARM, use `windows_arm64`.
+
+Check the install with `tour --version`.
+
+## Quick start
+
+You need git and one of these, installed and signed in:
+
+| LLM | Check | Sign in |
+| --- | --- | --- |
+| [Claude Code](https://claude.com/claude-code) | `claude --version` | run `claude` once |
+| [Codex CLI](https://github.com/openai/codex) | `codex --version` | `codex login` |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `gemini --version` | run `gemini` once |
+
+Then, in a repository:
 
 ```sh
 cd your-repo
 tour
 ```
 
-On the first run, `tour` asks two things: the language (detected from your terminal, English by default) and the LLM that writes tours. Run `tour setup` to change them later.
+The first time, `tour` asks for the language (detected from your terminal) and the LLM. Then it lists the changes you can tour. Your current branch is already selected, so press Enter.
 
-Then pick the change to tour. Your current branch, including uncommitted changes, is selected, so you can just press Enter.
-Writing a tour takes a few minutes; you can watch which files are being read. The tour is saved, so opening it again is instant.
+To try it without your own code, use the example repository from the GIF:
+
+```sh
+git clone https://github.com/init-co-jp/diff-tour-example
+cd diff-tour-example
+git checkout feature/coupons
+tour
+```
+
+## Choosing what to tour
 
 | Command | Tours |
 | --- | --- |
-| `tour` | a branch you choose, compared with the default branch. If you have uncommitted changes, the current branch **with** them is listed first |
-| `tour <branch>` | that branch |
+| `tour` | a branch you pick from a list, compared with the default branch. If you have uncommitted changes, the current branch **with** them comes first |
+| `tour <branch>` | that branch, e.g. `feature/x`, or `origin/feature/x` to review someone else's branch |
 | `tour <commit>` | that single commit |
 | `tour <base>..<head>` | that range |
-| `tour <file>.json` | a tour file (for example `tours/example-coupons.en.json`) |
+| `tour <file>.json` | a saved tour file, e.g. [`tours/example-coupons.en.json`](tours/example-coupons.en.json) |
+| `tour setup` | choose the language and the LLM again |
+
+## Keys
 
 | Key | Action |
 | --- | --- |
-| `→` `space` `enter` | Next step |
-| `←` `backspace` | Previous step |
-| `o` | Open the code of this step in your editor (`$VISUAL` / `$EDITOR`, or `TOUR_EDITOR="code -g {file}:{line}"`) |
-| `q` | Quit |
-| `↑` `↓` | Scroll, only when a step does not fit on the screen |
+| <kbd>→</kbd> <kbd>Space</kbd> <kbd>Enter</kbd> | Next step |
+| <kbd>←</kbd> <kbd>Backspace</kbd> | Previous step |
+| <kbd>o</kbd> | Open the code of this step in your editor |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Scroll, when a step does not fit on the screen |
+| <kbd>q</kbd> | Quit |
 
 ## What a step can show
 
-- Code and diffs, always read from git at the right commit, with syntax highlighting for any language
-- Code that is **not** in the repository (a naive alternative, a suggested fix), always labeled as such
-- Flow and timeline diagrams
-- Database schemas before and after the change, computed by applying the migrations to an in-memory SQLite database (SQLite migrations only for now)
-- Tables of example data
-- Questions that make you think before the answer is shown on the next step
+- code and diffs, read from git at the right commit, with syntax highlighting
+- code that is **not** in the repository, such as a naive version or a possible fix, labeled **Example**
+- flow and timeline diagrams
+- database schemas before and after the change, computed by applying the migrations to an in-memory SQLite database (SQLite migrations only for now)
+- tables of example data
+- questions to think about before the answer appears on the next step
 
-Every explanation is labeled with how it is known: **Verified** (backed by code, tests or commit messages), **From the code** (inferred from the structure), or **Senior view** (general design judgment, not verified in this repository).
+Every explanation is labeled with how it is known:
 
-## Read-only by design
+| Label | Meaning |
+| --- | --- |
+| **Verified** | backed by code, tests or commit messages in this repository |
+| **From the code** | inferred from how the code is structured |
+| **Senior view** | general design judgment, not checked against this repository |
 
-`tour` never writes to your working tree or `.git`.
+## Configuration
 
-- To write a tour, it exports the files before and after the change to your cache directory and runs Claude Code there with read-only tools only (`Read`, `Grep`, `Glob`; no shell, no web). Files ignored by `.gitignore` (such as `.env`) are never exported. The code of the change is sent to the LLM you chose.
-- When you open a file that differs from the commit being toured, it opens a read-only copy under your cache directory instead.
+| | Linux | macOS | Windows |
+| --- | --- | --- | --- |
+| Settings | `~/.config/tour/config.json` | `~/Library/Application Support/tour/config.json` | `%AppData%\tour\config.json` |
+| Saved tours | `~/.cache/tour/tours/` | `~/Library/Caches/tour/tours/` | `%LocalAppData%\tour\tours\` |
+
+On Linux, `XDG_CONFIG_HOME` and `XDG_CACHE_HOME` are respected. The cache is safe to delete. Tours are written again when needed.
+
+**Editor.** <kbd>o</kbd> uses `$VISUAL` or `$EDITOR`, and knows how to jump to a line in vim, Neovim, Emacs, nano, VS Code, Cursor, Zed, Helix, Sublime Text and others. For any other editor, set a template:
+
+```sh
+export TOUR_EDITOR='code -g {file}:{line}'
+```
+
+If the file on disk differs from the commit being toured, `tour` opens a read-only copy from the cache instead, so you see the code the tour talks about.
+
+**Language.** English and Japanese. `tour setup` changes it, and `tour --lang ja` changes it for one run.
+
+## FAQ
+
+**How much does a tour cost?**
+It runs on your own Claude Code, Codex or Gemini plan. With Claude Code, one tour of a change of about 250 lines used the equivalent of $0.50 to $1.00 at API prices. Opening a saved tour again costs nothing.
+
+**Why does it take minutes?**
+Before writing, the LLM reads the files around the change, not only the diff. That reading is what lets the tour explain code that did not change.
+
+**Can I share a tour?**
+Yes. A tour is a JSON file in the cache directory, and anyone with the same repository can open it with `tour <file>.json`.
+
+**When is `tour` not the right tool?**
+For a one-line fix, reading the diff is faster. `tour` is for changes where the "why" is not obvious from the diff: new features, refactors, and code written by AI that you are now expected to own.
 
 ## Development
 
@@ -76,7 +267,7 @@ go test ./...
 go run ./cmd/tour tours/example-coupons.en.json --repo path/to/diff-tour-example --dump --cols 140 --rows 44 --plain
 ```
 
-`--dump` prints every step at a fixed screen size, which is handy for checking layouts without a terminal.
+`--dump` prints every step at a fixed screen size, which is handy for checking layouts without a terminal. [`demo/`](demo) records the GIFs, and [`experiments/generate`](experiments/generate) has the notes from tuning the prompts.
 
 ## License
 
