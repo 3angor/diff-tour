@@ -50,6 +50,18 @@ func TestWrapJapaneseDoesNotStartLineWithPunctuation(t *testing.T) {
 	}
 }
 
+func TestWrapKeepsPunctuationAfterStyledText(t *testing.T) {
+	lines := Wrap([]Span{{Text: "columns are "}, {Text: "INTEGER", Style: "36"}, {Text: ". This follows"}}, 19)
+	got := plain(lines)
+	if strings.Join(got, "|") != "columns are|INTEGER. This|follows" {
+		t.Errorf("got %q", got)
+	}
+	// The period keeps its own style
+	if l := lines[1]; len(l) < 2 || l[0].Text != "INTEGER" || l[0].Style != "36" || !strings.HasPrefix(l[1].Text, ".") || l[1].Style != "" {
+		t.Errorf("styles: %+v", l)
+	}
+}
+
 func TestParseInline(t *testing.T) {
 	spans := ParseInline("a **b `c` d** `e`", "")
 	var styles []string

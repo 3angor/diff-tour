@@ -51,10 +51,13 @@ func FindTargets(repo *git.Repo, base string, lang i18n.Lang, backend string) []
 		key := generate.CacheKey(repo, base, b.Name, lang, backend)
 		cached, _ := generate.LoadCached(key)
 		t := Target{Base: base, Head: b.Name, Label: b.Name, Current: b.Name == current, Commits: n, Committed: b.Committed, Cached: cached != nil, Key: key}
-		if t.Current && len(targets) == 0 {
-			targets = append([]Target{t}, targets...)
-		} else if t.Current {
-			targets = append(targets[:1], append([]Target{t}, targets[1:]...)...)
+		// The current branch comes first, right after the uncommitted target if there is one
+		if t.Current {
+			i := 0
+			if len(targets) > 0 && targets[0].Uncommitted {
+				i = 1
+			}
+			targets = append(targets[:i], append([]Target{t}, targets[i:]...)...)
 		} else {
 			targets = append(targets, t)
 		}

@@ -482,7 +482,7 @@ func basisLabel(b tour.Basis) (string, string) {
 	case tour.Fact:
 		return i18n.T("basis.fact"), "30;42"
 	case tour.Inferred:
-		return i18n.T("basis.inferred"), "97;44"
+		return i18n.T("basis.inferred"), "30;104"
 	default:
 		return i18n.T("basis.opinion"), "30;43"
 	}

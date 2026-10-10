@@ -185,9 +185,20 @@ func ParseInline(s, base string) []Span {
 // noLineStart lists characters that must not start a line (kinsoku, Japanese line-breaking rules). They stick to the preceding unit and wrap together with it.
 const noLineStart = "、。，．）」』】〕！？：；・ー…’”)]}.,!?:;"
 
+// unit is the smallest piece Wrap never splits. It can span several styles, e.g. code followed by a period.
 type unit struct {
-	text  string
-	style string
+	parts []Span
+}
+
+func (u unit) text() string {
+	if len(u.parts) == 1 {
+		return u.parts[0].Text
+	}
+	var b strings.Builder
+	for _, p := range u.parts {
+		b.WriteString(p.Text)
+	}
+	return b.String()
 }
 
 func units(spans []Span) []unit {
@@ -196,7 +207,7 @@ func units(spans []Span) []unit {
 		var word strings.Builder
 		flush := func() {
 			if word.Len() > 0 {
-				out = append(out, unit{word.String(), s.Style})
+				out = append(out, unit{[]Span{{Text: word.String(), Style: s.Style}}})
 				word.Reset()
 			}
 		}
@@ -204,10 +215,10 @@ func units(spans []Span) []unit {
 			switch {
 			case r == '\n' || r == ' ':
 				flush()
-				out = append(out, unit{string(r), s.Style})
+				out = append(out, unit{[]Span{{Text: string(r), Style: s.Style}}})
 			case RuneWidth(r) == 2:
 				flush()
-				out = append(out, unit{string(r), s.Style})
+				out = append(out, unit{[]Span{{Text: string(r), Style: s.Style}}})
 			default:
 				word.WriteRune(r)
 			}
@@ -218,9 +229,10 @@ func units(spans []Span) []unit {
 	for _, u := range out {
 		if n := len(merged); n > 0 {
 			prev := &merged[n-1]
-			first := []rune(u.text)[0]
-			if prev.text != "\n" && prev.text != " " && prev.style == u.style && strings.ContainsRune(noLineStart, first) {
-				prev.text += u.text
+			pt := prev.text()
+			first := []rune(u.text())[0]
+			if pt != "\n" && pt != " " && strings.ContainsRune(noLineStart, first) {
+				prev.parts = append(prev.parts, u.parts...)
 				continue
 			}
 		}
@@ -239,30 +251,35 @@ func Wrap(spans []Span, width int) []Line {
 		cur, w = nil, 0
 	}
 	for _, u := range units(spans) {
-		if u.text == "\n" {
+		t := u.text()
+		if t == "\n" {
 			newline()
 			continue
 		}
-		uw := Width(u.text)
-		if u.text == " " && (w == 0 || w+1 > width) {
+		uw := Width(t)
+		if t == " " && (w == 0 || w+1 > width) {
 			continue
 		}
 		if w+uw > width && w > 0 {
 			newline()
 		}
-		if uw > width {
-			for _, r := range u.text {
+		for _, p := range u.parts {
+			if uw <= width {
+				cur = Append(cur, p.Text, p.Style)
+				continue
+			}
+			for _, r := range p.Text {
 				rw := RuneWidth(r)
 				if w+rw > width {
 					newline()
 				}
-				cur = Append(cur, string(r), u.style)
+				cur = Append(cur, string(r), p.Style)
 				w += rw
 			}
-			continue
 		}
-		cur = Append(cur, u.text, u.style)
-		w += uw
+		if uw <= width {
+			w += uw
+		}
 	}
 	return append(lines, TrimRight(cur))
 }
