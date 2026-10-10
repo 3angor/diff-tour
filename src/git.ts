@@ -44,6 +44,11 @@ export class Repo {
     return out === null ? null : parseDiff(out);
   }
 
+  /** ある時点で dir の下にあるファイルのパス */
+  listFiles(ref: string, dir: string): string[] {
+    return (this.#git(['ls-tree', '-r', '--name-only', ref, '--', dir]) ?? '').split('\n').filter(Boolean);
+  }
+
   commits(base: string, head: string): Array<{ hash: string; subject: string }> {
     const out = this.#git(['log', '--format=%h%x09%s', `${base}..${head}`]) ?? '';
     return out

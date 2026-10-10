@@ -1,7 +1,8 @@
 import type { Repo } from './git.ts';
 import { highlight } from './highlight.ts';
-import { concat, fit, join, lineWidth, parseInline, strWidth, wrap, type Line } from './text.ts';
-import type { Basis, Block, CodeRef, DiffRef, FlatStep, Snippet, Tour } from './tour.ts';
+import { diffTable, loadSchema, type Change } from './schema.ts';
+import { concat, fit, join, lineWidth, parseInline, strWidth, wrap, type Line, type Span } from './text.ts';
+import type { Basis, Block, CodeRef, DiffRef, FlatStep, Location, Rows, SchemaRef, Snippet, Tour } from './tour.ts';
 
 type Ctx = { tour: Tour; repo: Repo };
 
@@ -136,6 +137,113 @@ function renderTable(table: { head: string[]; rows: string[][] }, width: number)
   return out;
 }
 
+type BoxRow = { cells: string[]; style?: string; marker?: Span };
+
+/** 罫線で囲んだ表。データベースのテーブルや行を見せるときに使う */
+function boxTable(head: string[], rows: BoxRow[], width: number, headStyles: Array<string | undefined> = []): Line[] {
+  const n = head.length;
+  const plainWidth = (s: string) => strWidth(s.replace(/\*\*|`/g, ''));
+  const widths = head.map((h, i) => Math.max(plainWidth(h), ...rows.map((r) => plainWidth(r.cells[i] ?? ''))));
+  const avail = width - 2 - (n + 1) - 2 * n;
+  while (widths.reduce((a, b) => a + b, 0) > avail) {
+    const i = widths.indexOf(Math.max(...widths));
+    if (widths[i] <= 6) break;
+    widths[i]--;
+  }
+  const B = '90';
+  const rule = (l: string, m: string, r: string): Line => [
+    { text: '  ' },
+    { text: l + widths.map((w) => '─'.repeat(w + 2)).join(m) + r, style: B },
+  ];
+  const row = (cells: string[], styles: Array<string | undefined>, marker?: Span): Line[] => {
+    const wrapped = cells.map((c, i) => wrap(parseInline(c, styles[i]), widths[i]));
+    const h = Math.max(...wrapped.map((w) => w.length));
+    const out: Line[] = [];
+    for (let k = 0; k < h; k++) {
+      const line: Line = [k === 0 && marker ? marker : { text: '  ' }, { text: '│', style: B }];
+      wrapped.forEach((w, i) => line.push({ text: ' ' }, ...fit(w[k] ?? [], widths[i]), { text: ' ' }, { text: '│', style: B }));
+      out.push(line);
+    }
+    return out;
+  };
+  const out: Line[] = [rule('┌', '┬', '┐'), ...row(head, head.map((_, i) => join('1', headStyles[i]))), rule('├', '┼', '┤')];
+  for (const r of rows) out.push(...row(r.cells, r.cells.map(() => r.style), r.marker));
+  out.push(rule('└', '┴', '┘'));
+  return out;
+}
+
+const CHANGE: Record<Change, { label: string; style: string; marker: string }> = {
+  added: { label: '追加', style: '92', marker: '+ ' },
+  removed: { label: '削除', style: '91', marker: '− ' },
+  changed: { label: '変更あり', style: '93', marker: '~ ' },
+  same: { label: '変更なし', style: '90', marker: '  ' },
+};
+
+function renderSchema(ref: SchemaRef, width: number, { tour, repo }: Ctx): Line[] {
+  const before = loadSchema(repo, tour.base, ref.migrations);
+  const after = loadSchema(repo, tour.head, ref.migrations);
+  if (typeof before === 'string') return error(before, width);
+  if (typeof after === 'string') return error(after, width);
+  const names =
+    ref.tables ??
+    [...new Set([...before.keys(), ...after.keys()])].filter((t) => diffTable(before.get(t), after.get(t)).change !== 'same');
+  const out: Line[] = [
+    fit([{ text: ' スキーマ ', style: '1;97;100' }, { text: `  ${ref.migrations} を ${tour.base} と ${tour.head} で当てた結果`, style: '90' }], width),
+  ];
+  for (const name of names) {
+    if (!before.has(name) && !after.has(name)) {
+      out.push(...error(`テーブルがありません: ${name}`, width));
+      continue;
+    }
+    const d = diffTable(before.get(name), after.get(name));
+    const c = CHANGE[d.change];
+    out.push([], [{ text: `  ${name}`, style: '1' }, { text: `  ${d.change === 'added' ? '新しいテーブル' : c.label}`, style: c.style }]);
+    out.push(
+      ...boxTable(
+        ['列', '型', '制約'],
+        d.columns.map((col) => {
+          const focus = ref.focus?.includes(`${name}.${col.name}`);
+          const cc = CHANGE[col.change];
+          return {
+            cells: [col.name, col.type, col.constraints || '—'],
+            style: focus ? join('1', col.change === 'same' ? undefined : cc.style) : col.change === 'same' ? undefined : cc.style,
+            marker: focus ? { text: '▶ ', style: '1;33' } : { text: cc.marker, style: cc.style },
+          };
+        }),
+        width,
+      ),
+    );
+    for (const i of d.indexes) {
+      const ic = CHANGE[i.change];
+      out.push([
+        { text: ic.marker, style: ic.style },
+        { text: i.unique ? '一意の索引 ' : '索引 ', style: '90' },
+        { text: `${i.name} (${i.columns.join(', ')})`, style: i.change === 'same' ? undefined : ic.style },
+      ]);
+    }
+  }
+  return out;
+}
+
+function renderRows(rows: Rows, width: number): Line[] {
+  const added = new Set(rows.added ?? []);
+  const styles = rows.head.map((h) => (added.has(h) ? '92' : undefined));
+  const out: Line[] = [fit([{ text: ` ${rows.tag ?? '例'} `, style: '30;43' }, { text: ` ${rows.label}`, style: '33' }], width)];
+  const table = boxTable(rows.head, rows.data.map((cells) => ({ cells })), width, styles);
+  // 増えた列は、データの部分も色を付ける
+  out.push(
+    ...table.map((line) => {
+      let col = -1;
+      return line.map((s) => {
+        if (s.text === '│') col++;
+        return s.style === undefined && col >= 0 && col < rows.head.length && styles[col] ? { ...s, style: styles[col] } : s;
+      });
+    }),
+  );
+  if (added.size) out.push([{ text: `  緑の列は今回の変更で増えた列`, style: '92' }]);
+  return out;
+}
+
 function renderTarget(width: number, { tour, repo }: Ctx): Line[] {
   const stat = repo.shortstat(tour.base, tour.head);
   const files = stat.match(/(\d+) files? changed/)?.[1] ?? '0';
@@ -181,6 +289,8 @@ export function renderBlock(block: Block, width: number, ctx: Ctx): Line[] {
   if ('code' in block) return renderCode(block.code, width, ctx);
   if ('diff' in block) return renderDiff(block.diff, width, ctx);
   if ('snippet' in block) return renderSnippet(block.snippet, width);
+  if ('schema' in block) return renderSchema(block.schema, width, ctx);
+  if ('rows' in block) return renderRows(block.rows, width);
   if ('target' in block) return renderTarget(width, ctx);
   return error('不明なブロック', width);
 }
@@ -189,7 +299,7 @@ function stack(blocks: Block[], width: number, ctx: Ctx): Line[] {
   return blocks.flatMap((b, i) => [...(i > 0 ? [[]] : []), ...renderBlock(b, width, ctx)]);
 }
 
-const isVisual = (b: Block) => 'code' in b || 'diff' in b || 'snippet' in b;
+const isVisual = (b: Block) => 'code' in b || 'diff' in b || 'snippet' in b || 'schema' in b || 'rows' in b;
 
 function trimEnd(line: Line): Line {
   const out = line.map((s) => ({ ...s }));
@@ -204,6 +314,30 @@ function spread(left: Line, right: Line, width: number): Line {
   return concat(fit(left, room), right);
 }
 
+/** `o` で開く場所 */
+export function stepLocation(step: FlatStep, { tour, repo }: Ctx): Location | null {
+  if (step.open) return step.open;
+  for (const b of step.blocks) {
+    if ('code' in b) return { file: b.code.file, line: b.code.lines[0], at: b.code.at };
+    if ('diff' in b) {
+      const hunks = repo.diff(tour.base, tour.head, b.diff.file) ?? [];
+      const picked = b.diff.hunks ? b.diff.hunks.map((i) => hunks[i]).filter(Boolean) : hunks;
+      const lines = picked.flatMap((h) => h.lines);
+      const changed = lines.findIndex((l) => l.kind !== ' ');
+      // 削除だけの行には head での行番号がないので、直前の行の番号を使う
+      const line = lines.slice(0, changed + 1).reverse().find((l) => l.newNo !== undefined)?.newNo ?? 1;
+      return { file: b.diff.file, line };
+    }
+    if ('schema' in b) {
+      const old = new Set(repo.listFiles(tour.base, b.schema.migrations));
+      const files = repo.listFiles(tour.head, b.schema.migrations).filter((f) => f.endsWith('.sql')).sort();
+      const file = files.filter((f) => !old.has(f)).at(-1) ?? files.at(-1);
+      if (file) return { file, line: 1 };
+    }
+  }
+  return null;
+}
+
 export type Frame = { lines: Line[]; maxScroll: number };
 
 export function renderFrame(
@@ -213,6 +347,7 @@ export function renderFrame(
   scroll: number,
   cols: number,
   rows: number,
+  message?: string,
 ): Frame {
   const step = steps[index];
   const inner = Math.max(20, cols - PAD * 2);
@@ -282,6 +417,7 @@ export function renderFrame(
     { text: ' ← 戻る', style: first ? '90' : undefined },
     { text: '   ' },
     last ? { text: '最後の手順です', style: '90' } : { text: '→ 次へ', style: '1' },
+    ...(stepLocation(step, ctx) ? [{ text: '   o エディタで開く', style: '90' }] : []),
     { text: '   q 終了', style: '90' },
   ];
   const more: Line =
@@ -292,7 +428,7 @@ export function renderFrame(
       ...header,
       ...visible.map((l) => concat([{ text: ' '.repeat(PAD) }], fit(l, inner), [{ text: ' '.repeat(cols - inner - PAD) }])),
       progress,
-      spread(keys, more, cols),
+      spread(keys, message ? [{ text: `${message} `, style: '33' }] : more, cols),
     ],
     maxScroll,
   };

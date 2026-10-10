@@ -87,11 +87,16 @@ export function toAnsi(line: Line, plain = false): string {
 /** `code` と **強調** だけを解釈する */
 export function parseInline(text: string, base?: string): Span[] {
   const spans: Span[] = [];
-  for (const part of text.split(/(\*\*[^*]+\*\*|`[^`]+`)/)) {
+  // **強調** の中に `code` が入ることがあるので、強調を先に分ける
+  for (const part of text.split(/(\*\*.+?\*\*)/)) {
     if (!part) continue;
-    if (part.startsWith('**') && part.endsWith('**')) spans.push({ text: part.slice(2, -2), style: join(base, '1') });
-    else if (part.startsWith('`') && part.endsWith('`')) spans.push({ text: part.slice(1, -1), style: join(base, '36') });
-    else spans.push({ text: part, style: base });
+    const bold = part.startsWith('**') && part.endsWith('**') && part.length > 4;
+    const style = bold ? join(base, '1') : base;
+    for (const piece of (bold ? part.slice(2, -2) : part).split(/(`[^`]+`)/)) {
+      if (!piece) continue;
+      if (piece.startsWith('`') && piece.endsWith('`')) spans.push({ text: piece.slice(1, -1), style: join(style, '36') });
+      else spans.push({ text: piece, style });
+    }
   }
   return spans;
 }

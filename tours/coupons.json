@@ -1,0 +1,218 @@
+{
+  "title": "クーポンで割引できるようにする",
+  "base": "main",
+  "head": "feature/coupons",
+  "chapters": [
+    {
+      "title": "対象",
+      "steps": [
+        {
+          "title": "このツアーで見る変更",
+          "blocks": [
+            { "target": true },
+            { "p": "コミットメッセージより:", "basis": "fact" },
+            { "quote": "POST /orders/:id/coupon でクーポンコードを受け取り、注文に割引を付ける。注文確定では割引を差し引いた金額を課金する。" }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "何が変わったのか",
+      "steps": [
+        {
+          "title": "ユーザーから見た変化",
+          "blocks": [
+            { "pre": "カートの注文（3,000 円）\n   │\n   │  POST /orders/o1/coupon  { \"code\": \"WELCOME\" }\n   ▼\n割引 500 円が付く ──── クーポンの期限切れ    → 410\n   │              └─── 使用回数の上限に達した → 409\n   │\n   │  POST /orders/o1/checkout\n   ▼\n2,500 円を課金" },
+            { "p": "クーポンには「割引額」「使える回数の上限」「期限」がある。注文確定の処理そのものは、課金する金額が変わるだけ。", "basis": "fact" },
+            { "p": "この変更の中心は**データベースのスキーマ**にある。まずデータの形から見ていく。" }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "データの形",
+      "steps": [
+        {
+          "title": "スキーマの変化",
+          "blocks": [
+            { "schema": { "migrations": "db/migrations", "tables": ["coupons", "orders"] } },
+            { "p": "この表は、マイグレーションを変更前（`main`）と変更後に当てて、実際にできたテーブルを比べたもの。", "basis": "fact" },
+            { "list": [
+              "`coupons` テーブルが新しくできた",
+              "`orders` に 2 列増えた。どのクーポンを使ったか（`coupon_code`）と、いくら割り引いたか（`discount_amount`）",
+              "既存の列と索引は変わっていない"
+            ] }
+          ]
+        },
+        {
+          "title": "実際のデータで見る",
+          "blocks": [
+            { "rows": {
+              "label": "マイグレーションを当てた直後の orders（説明用に作ったデータ）",
+              "head": ["id", "total_amount", "status", "coupon_code", "discount_amount"],
+              "data": [
+                ["o1", "3000", "PAID", "NULL", "0"],
+                ["o2", "1200", "PAYMENT_FAILED", "NULL", "0"],
+                ["o3", "4500", "CART", "NULL", "0"]
+              ],
+              "added": ["coupon_code", "discount_amount"]
+            } },
+            { "p": "マイグレーションより前からある注文には、新しい列に値が自動で入る。`coupon_code` は `NULL`（使っていない）、`discount_amount` は `0`。", "basis": "fact" },
+            { "p": "2 つとも「クーポンを使っていない」という意味なのに、**片方は `NULL`、片方は `0`** になっている。" }
+          ]
+        },
+        {
+          "title": "なぜ割引額は NULL ではなく 0 なのか",
+          "question": true,
+          "blocks": [
+            { "code": { "file": "db/migrations/002_add_coupons.sql", "lines": [9, 10], "show": [9, 10] } },
+            { "p": "`coupon_code` は `NULL` を許しているのに、`discount_amount` は `NOT NULL DEFAULT 0`。" },
+            { "p": "**どちらも「使っていなければ NULL」に揃えたほうが素直では？**" }
+          ]
+        },
+        {
+          "title": "答え：「ない」と「0 円」は意味が違う",
+          "blocks": [
+            { "snippet": { "label": "NULL を混ぜると計算がこうなる（SQLite で実行した結果）", "text": "SELECT 3000 - NULL;   -- → NULL（0 ではない）\nSELECT 3000 - 0;      -- → 3000" } },
+            { "p": "`coupon_code` の `NULL` は「クーポンが**ない**」という意味で正しい。一方、割引額は計算に使う数字。`NULL` を混ぜると、`total_amount - discount_amount` が `NULL` になり、請求額が消える。", "basis": "fact" },
+            { "p": "`0` にしておけば、どの注文でも同じ式で請求額が出せる。コードの側も `discountAmount: number` のままで済み、毎回「`null` だったら」と分岐しなくていい。", "basis": "inferred" },
+            { "p": "もう 1 つ、SQLite では**既定値なしに `NOT NULL` の列は追加できない**（既存の行に入れる値がないため）。`DEFAULT 0` は、既存の注文に「割引なし」を入れる役目も兼ねている。", "basis": "fact" }
+          ]
+        },
+        {
+          "title": "既存の決まりに合わせているか",
+          "blocks": [
+            { "code": { "file": "db/migrations/001_create_orders.sql", "lines": [4, 5], "show": [1, 9], "note": "変更なし" } },
+            { "p": "最初のマイグレーションには「金額は円の整数で持つ」という決まりが、理由付きで書いてある。", "basis": "fact" },
+            { "p": "新しい `discount_amount` と `coupons.discount_amount` も `INTEGER` で、`CHECK` で範囲を縛っている。**新しいコードを読むときは、既存のコードが決めているルールに従っているかも見る。** 今回は従っている。", "basis": "fact" }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "仕組み",
+      "steps": [
+        {
+          "title": "REFERENCES を書いただけでは守られない",
+          "blocks": [
+            { "code": { "file": "src/db.ts", "lines": [10, 10], "show": [8, 12], "note": "変更なし" } },
+            { "p": "`orders.coupon_code` は `REFERENCES coupons (code)` で、存在しないクーポンコードを入れられないようにしている（外部キー）。", "basis": "fact" },
+            { "p": "ただし SQLite は、**接続ごとに `PRAGMA foreign_keys = ON` を実行しないと外部キーを確かめない**。このリポジトリでは、DB を開く処理（今回は変更なし）でそれをしているので、ちゃんと効く。実際に存在しないコードを入れると `FOREIGN KEY constraint failed` になる。", "basis": "fact" },
+            { "p": "制約が効くかどうかは、スキーマだけ見てもわからないことがある。" }
+          ]
+        },
+        {
+          "title": "使用回数の上限をどう守っているか",
+          "question": true,
+          "blocks": [
+            { "code": { "file": "src/coupons/sqliteCouponRepository.ts", "lines": [36, 39], "show": [31, 40] } },
+            { "p": "上限の確認と回数の加算を、1 つの `UPDATE` 文でまとめてやっている。" },
+            { "p": "**先に `SELECT` で `used_count` を読んで、上限と比べてから `UPDATE` する、ではだめなのか？**" }
+          ]
+        },
+        {
+          "title": "答え：読んでから書く間に、他の人が割り込む",
+          "blocks": [
+            { "p": "上限 100 回のクーポンが、残り 1 回のときに 2 人が同時に使った場合。", "basis": "opinion" },
+            { "pre": "読んでから書く場合\n  A: SELECT → 99 回      ↓ 99 < 100 なので OK → UPDATE（100 回）\n  B:      SELECT → 99 回 ↓ 99 < 100 なので OK → UPDATE（101 回） ✘ 上限超え\n\n1 つの UPDATE で確かめる場合\n  A: UPDATE … WHERE used_count < 100 → 1 行更新（100 回）     ✔\n  B: UPDATE … WHERE used_count < 100 → 0 行（条件に合わない） ✔ 使用済み" },
+            { "p": "データベースは 1 つの `UPDATE` 文を割り込まれずに実行する。だから条件を `WHERE` に入れて、何行更新されたか（`changes`）で成否を判断すれば、同時に来ても上限を超えない。この書き方はよくできている。", "basis": "inferred" }
+          ]
+        },
+        {
+          "title": "請求額がマイナスにならないように",
+          "blocks": [
+            { "diff": { "file": "src/orders/orderService.ts" } },
+            { "code": { "file": "src/coupons/couponService.ts", "lines": [31, 32], "show": [30, 33] } },
+            { "p": "注文確定では、割引を差し引いた金額を課金するようになった。", "basis": "fact" },
+            { "p": "3,000 円の注文に 5,000 円引きのクーポンを使うと、そのままでは −2,000 円を請求してしまう。`Math.min` で割引額を注文金額までに抑えている。テスト「割引額は注文金額を超えない」がこれを守っている。", "basis": "fact" }
+          ]
+        },
+        {
+          "title": "機械的な変更は読み飛ばしていい",
+          "blocks": [
+            { "diff": { "file": "test/reconcilePendingPayments.test.ts", "hunks": [0] } },
+            { "p": "`Order` に `discountAmount` が必須の項目として増えたので、注文を作っている既存のテストに `discountAmount: 0` を足している。同じ種類の変更が 3 ファイルにある。", "basis": "fact" },
+            { "list": ["`test/reconcilePendingPayments.test.ts`", "`test/sqliteOrderRepository.test.ts`", "`test/orderService.test.ts`（割引のテストの追加もある）"] },
+            { "p": "シニアは差分を読む前に、**頭を使うべき変更と機械的な変更を仕分ける**。機械的な変更は「全部同じパターンか」だけ確かめて、注意を残りに回す。", "basis": "opinion" }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "シニアならここで手が止まる",
+      "steps": [
+        {
+          "title": "同じ注文にクーポンを 2 回適用したら？",
+          "question": true,
+          "blocks": [
+            { "code": { "file": "src/coupons/couponService.ts", "lines": [25, 30], "show": [18, 34] } },
+            { "p": "上限の守り方はよくできていた。では、**同じ注文**に対して `apply` が 2 回呼ばれたらどうなるか。" },
+            { "p": "**この関数は、注文にすでにクーポンが付いているかを見ているか？**" }
+          ]
+        },
+        {
+          "title": "答え：使っていない分まで回数が減る",
+          "blocks": [
+            { "rows": {
+              "tag": "実行結果",
+              "label": "1 つの注文に操作を重ねたときの使用回数（メモリ上の DB で実行して確かめた）",
+              "head": ["操作", "A の used_count", "B の used_count", "注文の coupon_code"],
+              "data": [
+                ["（はじめ）", "0", "0", "NULL"],
+                ["A を適用", "1", "0", "A"],
+                ["もう一度 A を適用", "2", "0", "A"],
+                ["B に切り替え", "2", "1", "B"]
+              ]
+            } },
+            { "p": "`apply` は注文の `couponCode` を見ずに、毎回 `consumeUse` で回数を増やす。同じクーポンを 2 回適用すると 2 回分減り、別のクーポンに切り替えても前のクーポンの回数は戻らない。", "basis": "fact" },
+            { "p": "結果として、**実際には使われていないのに上限に達して、他のお客さんが使えなくなる**。画面の二重送信や「やっぱり別のクーポンにする」で普通に起きる。テストは 1 回ずつしか適用していないので、気付けない。", "basis": "inferred" }
+          ]
+        },
+        {
+          "title": "スキーマで守るという選択肢",
+          "blocks": [
+            { "snippet": { "label": "使用の記録を行として持つ設計（このリポジトリにないコード）", "text": "CREATE TABLE coupon_redemptions (\n  order_id    TEXT PRIMARY KEY REFERENCES orders (id),  -- 1 つの注文に 1 回まで\n  coupon_code TEXT NOT NULL REFERENCES coupons (code)\n);\n\n-- 使った回数は記録から数える\nSELECT COUNT(*) FROM coupon_redemptions WHERE coupon_code = ?;" } },
+            { "p": "今回の設計は、使った回数を `used_count` という**数として持つ**。速くて単純だが、数と実態がずれる経路（二重の適用、切り替え、注文の取り消し）を、すべてコードで塞ぐ必要がある。", "basis": "opinion" },
+            { "p": "使用を**記録の行として持てば**、「1 つの注文に 1 回まで」を主キーという制約で守れる。コードに抜けがあっても、データベースが最後の砦になる。", "basis": "opinion" },
+            { "p": "どちらが正しいかは規模や要件による。ただ、シニアは「この数は、何かとずれる可能性があるか」を必ず考える。", "basis": "opinion" }
+          ]
+        },
+        {
+          "title": "古いコードと同時に動いても大丈夫か",
+          "blocks": [
+            { "code": { "file": "src/orders/orderService.ts", "at": "base", "lines": [44, 44], "show": [42, 48], "note": "変更前のコード" } },
+            { "p": "本番では、サーバーを 1 台ずつ新しい版に入れ替えることが多い。その間、**新しいスキーマの上で古いコードも動く**。", "basis": "opinion" },
+            { "p": "スキーマの面では問題ない。増えた列には既定値があるか `NULL` を許すので、古いコードが列を指定せずに書き込んでも失敗しない。古いコードの `save` は新しい列を更新しないので、付いた割引を消すこともない。", "basis": "fact" },
+            { "p": "ただし振る舞いの面では問題がある。新しいサーバーでクーポンを適用し、古いサーバーで注文を確定すると、古いコードは `total_amount` をそのまま課金する。**割引が効かずに満額を請求してしまう**。", "basis": "inferred" },
+            { "p": "このリポジトリにはデプロイの手順が書かれていないので、実際に入れ替え中の状態が起きるかは確かめていない。", "basis": "inferred" }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "まとめ",
+      "steps": [
+        {
+          "title": "シニアならこの変更にどうコメントするか",
+          "blocks": [
+            { "quote": "スキーマの設計は既存の決まりに沿っていて、使用回数の上限を 1 つの UPDATE で守っているのも良いです。\n1 点、同じ注文に 2 回適用したり、別のクーポンに切り替えたりすると、使っていない分まで used_count が増えます。すでにクーポンが付いている注文は弾くか、使用を coupon_redemptions のような記録で持って、1 注文 1 回を制約で守ることを検討してください。あわせて、回数の加算と注文の保存は 1 つのトランザクションにしたいです。\nもう 1 点、入れ替えの途中で古いサーバーが注文を確定すると割引が効かないので、クーポンの API はすべてのサーバーが新しい版になってから有効にしたいです。" },
+            { "snippet": { "label": "修正案の一部（このリポジトリにないコード）", "text": "if (order.couponCode) {\n  // すでにクーポンが付いている注文に重ねて使わせない\n  throw new CouponAlreadyAppliedError(order.id);\n}" } }
+          ]
+        },
+        {
+          "title": "このツアーで追体験したこと",
+          "blocks": [
+            { "list": [
+              "スキーマの変更は、まず「既存のデータに何が入るか」を見る",
+              "`NULL` と `0` は意味が違う。計算に使う値は、`NULL` を避けて既定値を決める",
+              "制約が実際に効くかは、スキーマの外（接続の設定）で決まることがある",
+              "「読んでから書く」は、同時に来ると壊れる。条件付きの 1 文で済ませる",
+              "数を持つ設計では「その数は実態とずれないか」を考える。制約で守れる形を検討する",
+              "スキーマの変更は、入れ替え中に古いコードと同時に動くことを前提に考える"
+            ] }
+          ]
+        }
+      ]
+    }
+  ]
+}

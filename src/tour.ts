@@ -27,6 +27,27 @@ export type Snippet = {
   text: string;
 };
 
+export type SchemaRef = {
+  /** マイグレーションの SQL があるディレクトリ（ファイル名の順に当てる） */
+  migrations: string;
+  /** 見せるテーブル。省略時は変更のあったテーブルすべて */
+  tables?: string[];
+  /** 強調する列（"テーブル.列"） */
+  focus?: string[];
+};
+
+export type Rows = {
+  /** 表の出どころを示す短い札。既定は「例」（説明用に作ったデータ） */
+  tag?: string;
+  label: string;
+  head: string[];
+  data: string[][];
+  /** 今回の変更で増えた列 */
+  added?: string[];
+};
+
+export type Location = { file: string; line: number; at?: 'base' | 'head' };
+
 export type Block =
   | { p: string; basis?: Basis }
   | { quote: string }
@@ -36,12 +57,16 @@ export type Block =
   | { code: CodeRef }
   | { diff: DiffRef }
   | { snippet: Snippet }
+  | { schema: SchemaRef }
+  | { rows: Rows }
   | { target: true };
 
 export type Step = {
   title: string;
   /** 問いだけを見せる手順。答えは次の手順に置く */
   question?: boolean;
+  /** `o` で開く場所。省略時は最初のコードのブロックから決める */
+  open?: Location;
   blocks: Block[];
 };
 
