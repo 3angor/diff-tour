@@ -1,0 +1,526 @@
+{
+  "version": 1,
+  "title": "決済の一時障害をリトライする変更を、シニアの目で読む",
+  "base": "main",
+  "head": "feature/payment-retry",
+  "chapters": [
+    {
+      "title": "対象",
+      "steps": [
+        {
+          "title": "この変更",
+          "blocks": [
+            {
+              "target": true
+            },
+            {
+              "quote": "注文確定で決済の一時障害をリトライする\n決済サービスが一時的に 503 を返すと注文確定が失敗し、ユーザーが注文履歴を見に行くしかなかった。RetryingPaymentGateway で包んで自動でやり直し、それでも失敗した場合はその場でやり直せるようにした。"
+            },
+            {
+              "p": "コミットは 2 つ。1 つ目で `RetryingPaymentGateway` を足し、2 つ目でそれを組み込んで、失敗時の注文の扱いと HTTP の応答を変えている。",
+              "basis": "fact"
+            },
+            {
+              "p": "メッセージには「やり直す」と「その場でやり直せる」の 2 つの話が入っている。シニアはこの 2 つを分けて読む。前者は新しい部品の追加、後者は**既存の状態の扱いを変える**話で、危ないのはたいてい後者になる。",
+              "basis": "opinion"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "何が変わったのか",
+      "steps": [
+        {
+          "title": "ユーザーから見た違い",
+          "blocks": [
+            {
+              "p": "決済サービスが障害やタイムアウトを返したときの、注文確定の振る舞いを比べる。",
+              "basis": "fact"
+            },
+            {
+              "table": {
+                "head": [
+                  "",
+                  "変更前（main）",
+                  "変更後"
+                ],
+                "rows": [
+                  [
+                    "自動のやり直し",
+                    "なし（1 回だけ）",
+                    "最大 3 回"
+                  ],
+                  [
+                    "HTTP 応答",
+                    "503 `payment_pending`",
+                    "502 `payment_failed`"
+                  ],
+                  [
+                    "画面の文言",
+                    "決済の結果を確認しています…",
+                    "決済に失敗しました…"
+                  ],
+                  [
+                    "注文の状態",
+                    "`PENDING_PAYMENT` のまま",
+                    "`PAYMENT_FAILED`"
+                  ],
+                  [
+                    "もう一度確定",
+                    "照合バッチが片付けるまで不可",
+                    "すぐにできる"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "一時的な 503 なら、ユーザーはエラーを見ずに済むようになる。ここは素直に改善になっている。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "変更前は「待たされていた」",
+          "blocks": [
+            {
+              "p": "変更前は、障害時に注文が `PENDING_PAYMENT` のまま残っていた。照合バッチは 5 分ごとに動き、更新から 10 分たった注文しか触らない。そのため、ユーザーは最大で 15 分ほど再注文できなかった。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "lines": [
+                  5,
+                  11
+                ],
+                "show": [
+                  5,
+                  11
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "コミットメッセージの「注文履歴を見に行くしかなかった」は、この待ち時間のことだ。不便なのは確かだ。ただ、この待ち時間が**何のために**あったのかを確かめるまでは、消してよいとは言えない。次の章で確かめる。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "全体の地図",
+      "steps": [
+        {
+          "title": "注文確定の流れ",
+          "blocks": [
+            {
+              "p": "変更していない部分も含めた、処理の全体の流れ。",
+              "basis": "fact"
+            },
+            {
+              "pre": "POST /orders/:id/checkout   (server.ts)\n  └ handleCheckout            (handlers/checkout.ts)\n      └ OrderService.checkout (orders/orderService.ts)\n          1. CART / PAYMENT_FAILED か確かめる\n          2. PENDING_PAYMENT を保存\n          3. payments.charge(冪等キー = order-<id>)\n               └ RetryingPaymentGateway   ← 今回追加\n                   └ HttpPaymentGateway\n          4. 成功 → PAID を保存\n             失敗 → ？（今回変わった）\n\n5 分ごと (server.ts setInterval)\n  └ reconcilePendingPayments  (jobs/)\n      PENDING_PAYMENT で 10 分以上前の注文を\n      findCharge で照合 → PAID / PAYMENT_FAILED"
+            },
+            {
+              "p": "注文の状態は `PENDING_PAYMENT` を介して、注文確定と照合バッチの 2 か所から書き換えられる。今回の変更はその片方だけを触っている。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "決済の失敗は 3 種類あり、意味が違う",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/payment/gateway.ts",
+                "lines": [
+                  20,
+                  48
+                ],
+                "show": [
+                  20,
+                  48
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "table": {
+                "head": [
+                  "例外",
+                  "課金されたか"
+                ],
+                "rows": [
+                  [
+                    "`PaymentDeclinedError`",
+                    "されていない（カード拒否）"
+                  ],
+                  [
+                    "`PaymentUnavailableError`",
+                    "されていない（5xx・429・接続失敗）"
+                  ],
+                  [
+                    "`PaymentTimeoutError`",
+                    "**分からない**。済んでいるかもしれない"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "このコードベースで一番大事な約束はここにある。タイムアウトだけは「失敗」ではなく「結果が分からない」を表している。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "「分からない」を引き受けていたのは照合バッチ",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "lines": [
+                  17,
+                  32
+                ],
+                "show": [
+                  12,
+                  33
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "バッチが拾うのは `PENDING_PAYMENT` の注文**だけ**だ（18 行目）。決済サービスに冪等キーで課金の記録を問い合わせ、あれば `PAID`、なければ `PAYMENT_FAILED` にする。28 行目のコメントにあるとおり、`PAYMENT_FAILED` は「課金の記録がないことを確かめた」状態として扱われている。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/orders/order.ts",
+                "lines": [
+                  13,
+                  19
+                ],
+                "show": [
+                  13,
+                  19
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "冪等キーを 1 か所で作っているのは、注文確定とバッチが同じ課金を指すためだ。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "仕組み",
+      "steps": [
+        {
+          "title": "RetryingPaymentGateway の本体",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/payment/retryingGateway.ts",
+                "lines": [
+                  35,
+                  44
+                ],
+                "show": [
+                  30,
+                  54
+                ]
+              }
+            },
+            {
+              "p": "終わりのない `for` で回す。成功すれば `return`、一時的でない例外か上限に達したときは `throw e` で抜ける。やり直すのは `isTransient` が真のとき、つまり Unavailable と Timeout だけだ。カード拒否は何度送っても結果が変わらないので、やり直さない。",
+              "basis": "fact"
+            },
+            {
+              "p": "`findCharge` はそのまま中身に渡しているだけで、やり直さない。照合バッチも `app.payments` を受け取るので、同じ部品を通る（`server.ts:24`）。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "問い：タイムアウトをやり直して、二重課金にならないのはなぜか",
+          "question": true,
+          "blocks": [
+            {
+              "p": "タイムアウトは「課金が済んでいるかもしれない」エラーだった。それなのに、このクラスはタイムアウトでも同じ課金をもう一度送っている。"
+            },
+            {
+              "p": "1 回目が実は成功していたら、2 回目で 2 回分の課金になりそうに見える。なぜそうならないのか。コードのどこがそれを守っているか。"
+            }
+          ]
+        },
+        {
+          "title": "答え：冪等キーと、その門番",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/payment/gateway.ts",
+                "lines": [
+                  6,
+                  7
+                ],
+                "show": [
+                  1,
+                  8
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "同じ冪等キーの課金は、決済サービス側で 1 回分として扱われる。やり直しでも同じ `req` を渡しているので、1 回目が成功していれば 2 回目は同じ課金を返すだけになる。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/payment/retryingGateway.ts",
+                "lines": [
+                  31,
+                  33
+                ]
+              }
+            },
+            {
+              "p": "冒頭の 3 行は一見すると過剰な確認に見える。だが、キーがない課金をやり直すと本当に二重課金になる。このクラスが安全である前提そのものを確かめている門番だ。テストも、同じキーで送ること（`test/retryingGateway.test.ts:29`）と、キーがなければ 1 回も送らないことを確かめている。",
+              "basis": "fact"
+            },
+            {
+              "p": "ただし保持期間は **24 時間**。この数字は第 5 章で効いてくる。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "待ち時間のばらつきと、テストのための差し込み口",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/payment/retryingGateway.ts",
+                "lines": [
+                  40,
+                  42
+                ]
+              }
+            },
+            {
+              "p": "上限は 200ms、400ms と倍に伸び、実際の待ち時間は 0 からその上限までの乱数になる。決済サービスが落ちたとき、多くの注文が同じ間隔で一斉にやり直すと、復旧しかけたサービスをまた倒してしまう。ばらつかせるのはそれを避けるためだ。",
+              "basis": "opinion"
+            },
+            {
+              "code": {
+                "file": "test/retryingGateway.test.ts",
+                "lines": [
+                  14,
+                  17
+                ],
+                "show": [
+                  10,
+                  27
+                ]
+              }
+            },
+            {
+              "p": "`sleep` と `random` をコンストラクタで差し替えられるので、テストは実際には待たずに済む。`random: () => 1` にして待ち時間を `[200, 400]` に固定し、計算を確かめている。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "包んで差し替える",
+          "blocks": [
+            {
+              "diff": {
+                "file": "src/app.ts"
+              }
+            },
+            {
+              "p": "`OrderService` は `PaymentGateway` インターフェースしか知らないので、何も変えずにリトライが入る。HTTP の詳細はリトライを知らず、リトライは HTTP を知らない。テストでも偽の決済サービスを包んで単体で試せる。",
+              "basis": "fact"
+            },
+            {
+              "p": "同じインターフェースを実装したもので中身を包み、振る舞いを足すこの形は **Decorator** と呼ばれる。",
+              "basis": "opinion"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "シニアならここで手が止まる",
+      "steps": [
+        {
+          "title": "問い：消えた 2 行のコメント",
+          "question": true,
+          "blocks": [
+            {
+              "diff": {
+                "file": "src/orders/orderService.ts",
+                "hunks": [
+                  1
+                ]
+              }
+            },
+            {
+              "p": "新しいコメントは「リトライ済みなので失敗として扱う」と言っている。消されたコメントは「課金されたか分からない」と言っていた。"
+            },
+            {
+              "p": "決済の応答がタイムアウトした注文は、変更後にどうなるか。ユーザーがもう一度注文を確定しなかった場合も考えてみる。"
+            }
+          ]
+        },
+        {
+          "title": "答え：課金済みなのに「失敗」の注文ができる",
+          "blocks": [
+            {
+              "p": "リトライしても、最後の試行がタイムアウトなら「分からない」は残る。リトライで分からなさは消えない。",
+              "basis": "inferred"
+            },
+            {
+              "pre": "10:00 charge 送信 → 決済側は課金完了\n       応答が 10 秒届かず Timeout（×3 回）\n10:00 注文 = PAYMENT_FAILED、画面「失敗しました」\n10:15 照合バッチ: PENDING_PAYMENT だけを見る\n       → この注文は対象外。誰も直さない\n\n結果: 代金は引かれ、注文は失敗のまま"
+            },
+            {
+              "list": [
+                "ユーザーが 24 時間以内に再注文すれば、同じキーで既存の課金が返り `PAID` になる。運がよければ救われる",
+                "再注文しなければ、**課金済みで未発送**の注文が残る",
+                "24 時間を過ぎて再注文すると、キーの保持が切れて**二重課金**になる"
+              ]
+            },
+            {
+              "p": "`PAYMENT_FAILED` は「課金の記録がないと確かめた」状態だった（照合バッチ 28 行目）。その約束を、確かめずに破っている。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "書き換えられた既存のテスト",
+          "blocks": [
+            {
+              "diff": {
+                "file": "test/orderService.test.ts"
+              }
+            },
+            {
+              "p": "テスト名の括弧の中「課金されたか分からないため」は、仕様の理由そのものだった。その理由に答えないまま、期待値を新しい実装に合わせて書き換えている。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "test/fakes.ts",
+                "lines": [
+                  15,
+                  21
+                ],
+                "show": [
+                  5,
+                  26
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "偽の決済サービスは、例外を投げるときに課金を記録しない。だから「タイムアウトしたが課金は済んでいた」という一番危ない場合を、このテストは表現できない。テストが通っていても安全の証拠にはならない。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "「最後のエラー」だけが返る",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/payment/retryingGateway.ts",
+                "lines": [
+                  39,
+                  39
+                ]
+              }
+            },
+            {
+              "p": "上限に達すると、最後の試行のエラーだけを投げる。たとえば「1 回目 Timeout → 2・3 回目 503」なら Unavailable が返る。1 回目で課金が済んでいたかもしれない、という情報はここで失われる。",
+              "basis": "inferred"
+            },
+            {
+              "p": "つまり「Unavailable なら課金されていない」という `gateway.ts:31` の約束は、1 回の呼び出しには当てはまるが、リトライ後の結果には当てはまらない。「Timeout だけ `PENDING_PAYMENT` に戻せばよい」という単純な直し方では足りない。",
+              "basis": "inferred"
+            },
+            {
+              "p": "ついでに言うと、変更後の `catch` は想定外の `Error`（409 などの予期しない応答）でも `PAYMENT_FAILED` にする。変更前はこの場合も `PENDING_PAYMENT` に残していた。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "応答の約束と待ち時間",
+          "blocks": [
+            {
+              "diff": {
+                "file": "src/handlers/checkout.ts"
+              }
+            },
+            {
+              "list": [
+                "タイムアウトでも「決済に失敗しました」と表示するので、課金済みのユーザーに誤った案内をすることになる",
+                "503 `payment_pending` を見ているクライアントがあれば挙動が変わる。リポジトリ内に `payment_pending` の参照はなかったが、画面側のコードはこのリポジトリの外にあり確かめられない",
+                "1 回あたりのタイムアウトは 10 秒で、3 回やり直すと最悪で約 30.6 秒待たせる。前段のプロキシやクライアントの時間切れの設定は確かめていない"
+              ]
+            },
+            {
+              "p": "応答コードとエラー名は API の約束なので、変えるならクライアント側と合わせる必要がある。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "直し方の案",
+          "blocks": [
+            {
+              "p": "リトライはそのまま活かす。そのうえで「どこかで 1 回でもタイムアウトしたら、結果は分からない」を呼び出し元に伝え、注文確定は変更前の扱いに戻す。",
+              "basis": "opinion"
+            },
+            {
+              "snippet": {
+                "label": "このリポジトリにないコード（修正案）",
+                "text": "// retryingGateway.ts の charge 内\nlet sawTimeout = false;\nfor (let attempt = 1; ; attempt++) {\n  try {\n    return await this.#inner.charge(req);\n  } catch (e) {\n    if (e instanceof PaymentTimeoutError) sawTimeout = true;\n    if (!isTransient(e) || attempt >= this.#maxAttempts) {\n      // 途中で一度でも届いた可能性があれば「分からない」として返す\n      throw sawTimeout ? new PaymentTimeoutError({ cause: e }) : e;\n    }\n    ...\n  }\n}\n\n// orderService.ts の catch\nif (e instanceof PaymentDeclinedError || e instanceof PaymentUnavailableError) {\n  order.status = 'PAYMENT_FAILED';\n  await this.#orders.save(order);\n}\n// Timeout は PENDING_PAYMENT のまま照合バッチに任せる\nthrow e;"
+              }
+            },
+            {
+              "p": "ハンドラは Unavailable と Timeout で応答を分け、Timeout では変更前の「確認しています」の文言に戻す。テストには「タイムアウトしたが課金は済んでいた」という偽の決済サービスを足す。",
+              "basis": "opinion"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "まとめ",
+      "steps": [
+        {
+          "title": "シニアならこうコメントする",
+          "blocks": [
+            {
+              "quote": "リトライの追加と冪等キーの門番は良いと思います。ただ orderService の catch の変更は止めたいです。PaymentTimeoutError は「課金されたか分からない」エラーで、照合バッチは PENDING_PAYMENT しか見ません。タイムアウトで PAYMENT_FAILED にすると、課金済みなのに失敗のまま誰も直さない注文ができ、24 時間後の再注文では二重課金になります。リトライ中に一度でも Timeout があれば Timeout として返し、注文確定ではそれを PENDING_PAYMENT に残す形にしませんか。書き換えた既存テストも元に戻し、「タイムアウトしたが課金済み」の場合のテストを足してください。"
+            },
+            {
+              "list": [
+                "コミットメッセージの話を「新しい部品」と「既存の状態の扱いの変更」に分けて読んだ",
+                "変更していない照合バッチと例外の定義を読み、`PENDING_PAYMENT` が何を守っていたかを確かめた",
+                "タイムアウトのやり直しが安全なのは冪等キーのおかげで、その保持期間は 24 時間だと確かめた",
+                "消されたコメントと書き換えられたテストから、既存の約束が破られていることを見つけた",
+                "偽の決済サービスが一番危ない場合を表現できないため、テストが通っていても安全の証拠にならないと気づいた",
+                "リトライは「最後のエラー」だけを返すので、途中のタイムアウトの情報が失われることに気づいた",
+                "応答コード・文言・最悪の待ち時間という、外から見える約束の変化も洗い出した"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

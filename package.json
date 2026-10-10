@@ -1,7 +1,0 @@
-{
-  "name": "tour",
-  "private": true,
-  "type": "module",
-  "bin": { "tour": "src/main.ts" },
-  "engines": { "node": ">=23.6" }
-}

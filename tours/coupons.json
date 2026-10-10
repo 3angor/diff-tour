@@ -1,4 +1,5 @@
 {
+  "version": 1,
   "title": "クーポンで割引できるようにする",
   "base": "main",
   "head": "feature/coupons",
@@ -73,7 +74,7 @@
         {
           "title": "答え：「ない」と「0 円」は意味が違う",
           "blocks": [
-            { "snippet": { "label": "NULL を混ぜると計算がこうなる（SQLite で実行した結果）", "text": "SELECT 3000 - NULL;   -- → NULL（0 ではない）\nSELECT 3000 - 0;      -- → 3000" } },
+            { "snippet": { "label": "NULL を混ぜると計算がこうなる（SQLite で実行した結果）", "lang": "sql", "text": "SELECT 3000 - NULL;   -- → NULL（0 ではない）\nSELECT 3000 - 0;      -- → 3000" } },
             { "p": "`coupon_code` の `NULL` は「クーポンが**ない**」という意味で正しい。一方、割引額は計算に使う数字。`NULL` を混ぜると、`total_amount - discount_amount` が `NULL` になり、請求額が消える。", "basis": "fact" },
             { "p": "`0` にしておけば、どの注文でも同じ式で請求額が出せる。コードの側も `discountAmount: number` のままで済み、毎回「`null` だったら」と分岐しなくていい。", "basis": "inferred" },
             { "p": "もう 1 つ、SQLite では**既定値なしに `NOT NULL` の列は追加できない**（既存の行に入れる値がないため）。`DEFAULT 0` は、既存の注文に「割引なし」を入れる役目も兼ねている。", "basis": "fact" }
@@ -171,7 +172,7 @@
         {
           "title": "スキーマで守るという選択肢",
           "blocks": [
-            { "snippet": { "label": "使用の記録を行として持つ設計（このリポジトリにないコード）", "text": "CREATE TABLE coupon_redemptions (\n  order_id    TEXT PRIMARY KEY REFERENCES orders (id),  -- 1 つの注文に 1 回まで\n  coupon_code TEXT NOT NULL REFERENCES coupons (code)\n);\n\n-- 使った回数は記録から数える\nSELECT COUNT(*) FROM coupon_redemptions WHERE coupon_code = ?;" } },
+            { "snippet": { "label": "使用の記録を行として持つ設計（このリポジトリにないコード）", "lang": "sql", "text": "CREATE TABLE coupon_redemptions (\n  order_id    TEXT PRIMARY KEY REFERENCES orders (id),  -- 1 つの注文に 1 回まで\n  coupon_code TEXT NOT NULL REFERENCES coupons (code)\n);\n\n-- 使った回数は記録から数える\nSELECT COUNT(*) FROM coupon_redemptions WHERE coupon_code = ?;" } },
             { "p": "今回の設計は、使った回数を `used_count` という**数として持つ**。速くて単純だが、数と実態がずれる経路（二重の適用、切り替え、注文の取り消し）を、すべてコードで塞ぐ必要がある。", "basis": "opinion" },
             { "p": "使用を**記録の行として持てば**、「1 つの注文に 1 回まで」を主キーという制約で守れる。コードに抜けがあっても、データベースが最後の砦になる。", "basis": "opinion" },
             { "p": "どちらが正しいかは規模や要件による。ただ、シニアは「この数は、何かとずれる可能性があるか」を必ず考える。", "basis": "opinion" }
@@ -196,7 +197,7 @@
           "title": "シニアならこの変更にどうコメントするか",
           "blocks": [
             { "quote": "スキーマの設計は既存の決まりに沿っていて、使用回数の上限を 1 つの UPDATE で守っているのも良いです。\n1 点、同じ注文に 2 回適用したり、別のクーポンに切り替えたりすると、使っていない分まで used_count が増えます。すでにクーポンが付いている注文は弾くか、使用を coupon_redemptions のような記録で持って、1 注文 1 回を制約で守ることを検討してください。あわせて、回数の加算と注文の保存は 1 つのトランザクションにしたいです。\nもう 1 点、入れ替えの途中で古いサーバーが注文を確定すると割引が効かないので、クーポンの API はすべてのサーバーが新しい版になってから有効にしたいです。" },
-            { "snippet": { "label": "修正案の一部（このリポジトリにないコード）", "text": "if (order.couponCode) {\n  // すでにクーポンが付いている注文に重ねて使わせない\n  throw new CouponAlreadyAppliedError(order.id);\n}" } }
+            { "snippet": { "label": "修正案の一部（このリポジトリにないコード）", "lang": "typescript", "text": "if (order.couponCode) {\n  // すでにクーポンが付いている注文に重ねて使わせない\n  throw new CouponAlreadyAppliedError(order.id);\n}" } }
           ]
         },
         {

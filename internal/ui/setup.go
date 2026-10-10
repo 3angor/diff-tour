@@ -1,0 +1,218 @@
+package ui
+
+import (
+	"net/http"
+	"os"
+	"os/exec"
+	"time"
+
+	tea "charm.land/bubbletea/v2"
+
+	"github.com/DaiAoki/tour/internal/i18n"
+	"github.com/DaiAoki/tour/internal/text"
+)
+
+// LLMOption はツアーを作る LLM の候補。
+type LLMOption struct {
+	ID        string
+	Name      string
+	Available bool
+	// 使えない理由、または「見つかりました」
+	Status string
+	// このマシンの中で動く（コードが外に送られない）
+	Local bool
+}
+
+// DetectLLMs は使える LLM を探す。見つからないものも、何が足りないかを添えて返す。
+func DetectLLMs() []LLMOption {
+	command := func(id, name, bin string) LLMOption {
+		_, err := exec.LookPath(bin)
+		if err != nil {
+			return LLMOption{ID: id, Name: name, Status: "setup.notFound"}
+		}
+		return LLMOption{ID: id, Name: name, Available: true, Status: "setup.found"}
+	}
+	apiKey := func(id, name, env string) LLMOption {
+		if os.Getenv(env) == "" {
+			return LLMOption{ID: id, Name: name, Status: "setup.noKey:" + env}
+		}
+		return LLMOption{ID: id, Name: name, Available: true, Status: "setup.found"}
+	}
+	ollama := LLMOption{ID: "ollama", Name: "Ollama", Local: true, Status: "setup.notRunning"}
+	client := http.Client{Timeout: 300 * time.Millisecond}
+	if res, err := client.Get("http://127.0.0.1:11434/api/tags"); err == nil {
+		res.Body.Close()
+		if res.StatusCode == http.StatusOK {
+			ollama.Available, ollama.Status = true, "setup.found"
+		}
+	}
+	return []LLMOption{
+		command("claude-code", "Claude Code", "claude"),
+		command("codex", "Codex CLI", "codex"),
+		apiKey("anthropic-api", "Anthropic API", "ANTHROPIC_API_KEY"),
+		apiKey("openai-api", "OpenAI API", "OPENAI_API_KEY"),
+		ollama,
+	}
+}
+
+func statusText(s string) string {
+	if len(s) > len("setup.noKey:") && s[:len("setup.noKey:")] == "setup.noKey:" {
+		return i18n.T("setup.noKey", s[len("setup.noKey:"):])
+	}
+	return i18n.T(s)
+}
+
+// Setup は初回に言語と LLM を選ぶ画面。推奨が選ばれた状態で、Enter だけで進める。
+type Setup struct {
+	detectedFrom string
+	lang         int
+	llms         []LLMOption
+	llm          int // -1 は「使えるものがない」
+	focus        int // 0: 言語、1: LLM
+	width        int
+	Done         bool
+}
+
+func NewSetup(current i18n.Lang, detectedFrom, currentLLM string, llms []LLMOption) *Setup {
+	s := &Setup{detectedFrom: detectedFrom, llms: llms, llm: -1}
+	for i, l := range i18n.Langs {
+		if l == current {
+			s.lang = i
+		}
+	}
+	for i, o := range llms {
+		if o.Available && (s.llm < 0 || o.ID == currentLLM) {
+			s.llm = i
+		}
+	}
+	i18n.Set(current)
+	return s
+}
+
+func (s *Setup) Lang() i18n.Lang { return i18n.Langs[s.lang] }
+
+func (s *Setup) LLM() string {
+	if s.llm < 0 {
+		return ""
+	}
+	return s.llms[s.llm].ID
+}
+
+func (s *Setup) Init() tea.Cmd { return nil }
+
+// moveLLM は使えない候補を飛ばして選択を動かす。
+func (s *Setup) moveLLM(delta int) {
+	for i := s.llm + delta; i >= 0 && i < len(s.llms); i += delta {
+		if s.llms[i].Available {
+			s.llm = i
+			return
+		}
+	}
+}
+
+func (s *Setup) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		s.width = msg.Width
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case "up", "k":
+			if s.focus == 0 {
+				s.lang = max(0, s.lang-1)
+			} else if s.llm >= 0 {
+				s.moveLLM(-1)
+			}
+		case "down", "j":
+			if s.focus == 0 {
+				s.lang = min(len(i18n.Langs)-1, s.lang+1)
+			} else if s.llm >= 0 {
+				s.moveLLM(1)
+			}
+		case "enter", "right", "space":
+			if s.focus == 0 {
+				s.focus = 1
+			} else {
+				s.Done = true
+				return s, tea.Quit
+			}
+		case "left", "backspace":
+			s.focus = 0
+		case "q", "ctrl+c":
+			return s, tea.Quit
+		}
+		// 言語を選び替えたら、この画面の文言もその場で切り替える
+		i18n.Set(s.Lang())
+	}
+	return s, nil
+}
+
+func (s *Setup) View() tea.View {
+	width := s.width
+	if width == 0 {
+		width = 80
+	}
+	inner := width - 2
+	var lines []text.Line
+	add := func(l text.Line) { lines = append(lines, text.Concat(text.Line{{Text: " "}}, text.Fit(l, inner, ""))) }
+	option := func(selected, focused bool, label, note, noteStyle string, enabled bool) {
+		cursor, style := "  ", ""
+		if selected {
+			cursor = "▸ "
+			if focused {
+				style = "1;36"
+			} else {
+				style = "36"
+			}
+		}
+		if !enabled {
+			style = "90"
+		}
+		l := text.Line{{Text: " " + cursor, Style: "36"}, {Text: label, Style: style}}
+		if note != "" {
+			l = append(l, text.Span{Text: "  " + note, Style: noteStyle})
+		}
+		add(l)
+	}
+
+	add(nil)
+	add(text.Line{{Text: " tour ", Style: "30;46"}, {Text: "  " + i18n.T("setup.welcome"), Style: "1"}})
+	add(nil)
+	headStyle := func(group int) string {
+		if s.focus == group {
+			return "1"
+		}
+		return "90"
+	}
+	add(text.Line{{Text: " " + i18n.T("setup.lang"), Style: headStyle(0)}})
+	for i, l := range i18n.Langs {
+		note := ""
+		if l == i18n.Langs[s.lang] && s.detectedFrom != "" {
+			note = i18n.T("setup.detected", s.detectedFrom)
+		}
+		option(i == s.lang, s.focus == 0, l.Name(), note, "90", true)
+	}
+	add(nil)
+	add(text.Line{{Text: " " + i18n.T("setup.llm"), Style: headStyle(1)}})
+	for i, o := range s.llms {
+		noteStyle := "90"
+		if o.Available {
+			noteStyle = "32"
+		}
+		option(i == s.llm, s.focus == 1, o.Name, statusText(o.Status), noteStyle, o.Available)
+	}
+	add(text.Line{{Text: "   ────────────────", Style: "90"}})
+	switch {
+	case s.llm < 0:
+		add(text.Line{{Text: "   " + i18n.T("setup.none"), Style: "33"}})
+	case s.llms[s.llm].Local:
+		add(text.Line{{Text: "   " + i18n.T("setup.local"), Style: "90"}})
+	default:
+		add(text.Line{{Text: "   " + i18n.T("setup.sendsCode"), Style: "33"}})
+	}
+	add(nil)
+	add(text.Line{{Text: " " + i18n.T("setup.keys"), Style: "90"}})
+
+	view := tea.NewView(join(lines, false))
+	view.AltScreen = true
+	return view
+}

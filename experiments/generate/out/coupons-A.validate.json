@@ -1,0 +1,50 @@
+{
+  "file": "out/coupons-A.json",
+  "ok": true,
+  "errors": [],
+  "warnings": [],
+  "stats": {
+    "chapters": 6,
+    "steps": 18,
+    "questions": 2,
+    "basis": {
+      "fact": 15,
+      "inferred": 7,
+      "opinion": 5,
+      "none": 4
+    },
+    "kinds": {
+      "target": 1,
+      "quote": 2,
+      "p": 31,
+      "table": 3,
+      "rows": 1,
+      "pre": 1,
+      "code": 12,
+      "schema": 1,
+      "snippet": 1,
+      "diff": 3,
+      "list": 1
+    },
+    "codeRefs": 12,
+    "unchangedFiles": [
+      "src/payment/gateway.ts",
+      "db/migrations/001_create_orders.sql",
+      "src/payment/httpGateway.ts"
+    ],
+    "files": [
+      "src/orders/order.ts",
+      "src/payment/gateway.ts",
+      "db/migrations/001_create_orders.sql",
+      "src/coupons/couponService.ts",
+      "src/coupons/sqliteCouponRepository.ts",
+      "src/orders/orderService.ts",
+      "src/orders/sqliteOrderRepository.ts",
+      "src/server.ts",
+      "test/couponService.test.ts",
+      "test/orderService.test.ts",
+      "src/payment/httpGateway.ts",
+      "test/reconcilePendingPayments.test.ts"
+    ]
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "file": "out/payment-retry-A.json",
+  "ok": true,
+  "errors": [],
+  "warnings": [],
+  "stats": {
+    "chapters": 6,
+    "steps": 18,
+    "questions": 2,
+    "basis": {
+      "fact": 18,
+      "inferred": 6,
+      "opinion": 6,
+      "none": 4
+    },
+    "kinds": {
+      "target": 1,
+      "quote": 2,
+      "p": 34,
+      "table": 2,
+      "code": 11,
+      "pre": 2,
+      "diff": 4,
+      "list": 3,
+      "snippet": 1
+    },
+    "codeRefs": 11,
+    "unchangedFiles": [
+      "src/jobs/reconcilePendingPayments.ts",
+      "src/payment/gateway.ts",
+      "src/orders/order.ts",
+      "test/fakes.ts"
+    ],
+    "files": [
+      "src/jobs/reconcilePendingPayments.ts",
+      "src/payment/gateway.ts",
+      "src/orders/order.ts",
+      "src/payment/retryingGateway.ts",
+      "test/retryingGateway.test.ts",
+      "src/app.ts",
+      "src/orders/orderService.ts",
+      "test/orderService.test.ts",
+      "test/fakes.ts",
+      "src/handlers/checkout.ts"
+    ]
+  }
+}

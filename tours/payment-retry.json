@@ -1,4 +1,5 @@
 {
+  "version": 1,
   "title": "決済の一時障害時のリトライ",
   "base": "main",
   "head": "feature/payment-retry",
@@ -72,7 +73,7 @@
           "blocks": [
             { "diff": { "file": "src/app.ts" } },
             { "p": "リトライのループを `OrderService` の中ではなく、決済サービスとの通信を担う部品の**外側にかぶせて**実装している。", "basis": "inferred" },
-            { "snippet": { "label": "素直に書くとこうなりがち（このリポジトリにないコード）", "text": "// OrderService.checkout の中に直接書いた場合\nfor (let i = 0; i < 3; i++) {\n  try { result = await this.#payments.charge(req); break; }\n  catch (e) { if (!isTransient(e)) throw e; await sleep(200); }\n}" } },
+            { "snippet": { "label": "素直に書くとこうなりがち（このリポジトリにないコード）", "lang": "typescript", "text": "// OrderService.checkout の中に直接書いた場合\nfor (let i = 0; i < 3; i++) {\n  try { result = await this.#payments.charge(req); break; }\n  catch (e) { if (!isTransient(e)) throw e; await sleep(200); }\n}" } },
             { "p": "こう書くと、注文のルールとやり直しの制御が 1 つの関数に混ざる。決済を呼ぶ場所が増えるたびに、ループもコピーされる。" },
             { "p": "今回の書き方なら、`OrderService` から見えるのは「課金する」という 1 行のまま。やり直しは組み立て（`app.ts`）で差し込める。同じ形（`PaymentGateway`）を保ったまま外から機能を足すこの書き方を、**Decorator パターン**と呼ぶ。" }
           ]
@@ -192,7 +193,7 @@
           "title": "シニアならこの変更にどうコメントするか",
           "blocks": [
             { "quote": "リトライを部品として外にかぶせた設計と、冪等キーの必須チェックはとても良いです。\n1 点だけ、最終的な失敗の扱いを分けてください。タイムアウトで終わった場合は課金済みの可能性があるので、従来どおり `PENDING_PAYMENT` のまま照合バッチに任せるべきだと思います。応答できなかった場合は課金されていないとわかるので、`PAYMENT_FAILED` にしてその場でやり直せるようにする、で問題ありません。\nテスト「タイムアウトしたら PENDING_PAYMENT のまま残す」は元に戻しましょう。3 回 × 10 秒で最大 30 秒ほどかかる点は、前段のタイムアウトとの関係を確認させてください。" },
-            { "snippet": { "label": "修正案（このリポジトリにないコード）", "text": "} catch (e) {\n  if (!(e instanceof PaymentTimeoutError)) {\n    // 課金されていないと分かっている失敗だけ、その場でやり直せるようにする\n    order.status = 'PAYMENT_FAILED';\n    await this.#orders.save(order);\n  }\n  throw e;\n}" } }
+            { "snippet": { "label": "修正案（このリポジトリにないコード）", "lang": "typescript", "text": "} catch (e) {\n  if (!(e instanceof PaymentTimeoutError)) {\n    // 課金されていないと分かっている失敗だけ、その場でやり直せるようにする\n    order.status = 'PAYMENT_FAILED';\n    await this.#orders.save(order);\n  }\n  throw e;\n}" } }
           ]
         },
         {

@@ -1,0 +1,6 @@
+/tour
+/dist/
+
+# 生成の実験の生ログ（手元のパスを含む）
+experiments/generate/out/*.log
+experiments/generate/out/*.raw.json
