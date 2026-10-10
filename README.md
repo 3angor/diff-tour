@@ -15,6 +15,20 @@ Walk through a diff the way a senior engineer reads it.
 > [!NOTE]
 > diff-tour is an early release. The tour format and the screens may still change.
 
+## Quick start
+
+You need git and one of [Claude Code](https://claude.com/claude-code), [Codex CLI](https://github.com/openai/codex) or [Gemini CLI](https://github.com/google-gemini/gemini-cli), signed in.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/init-co-jp/diff-tour/main/install.sh | sh
+cd your-repo
+tour
+```
+
+If `tour` is not found, add the line the install script printed to your shell profile. The first time, press Enter three times: to accept the language, the LLM, and your current branch. After that, once is enough. Writing the tour takes 2 to 5 minutes. Then step through it with **→** and **←**, and quit with **q**.
+
+Other ways to install are in [Install](#install), and an example repository to try is in [First run](#first-run).
+
 ## What it is
 
 AI can write code that works. It does not teach you *why* the code is written that way, or what a reviewer would worry about.
@@ -161,7 +175,7 @@ Open a new terminal afterwards. On ARM, use `windows_arm64`.
 
 Check the install with `tour --version`.
 
-## Quick start
+## First run
 
 You need git and one of these, installed and signed in:
 

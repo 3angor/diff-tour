@@ -15,6 +15,20 @@
 > [!NOTE]
 > diff-tour は公開したばかりです。ツアーの形式や画面は、これからも変わることがあります。
 
+## クイックスタート
+
+git と、[Claude Code](https://claude.com/claude-code)、[Codex CLI](https://github.com/openai/codex)、[Gemini CLI](https://github.com/google-gemini/gemini-cli) のどれか 1 つ（ログイン済みのもの）が必要です。
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/init-co-jp/diff-tour/main/install.sh | sh
+cd your-repo
+tour
+```
+
+`tour` が見つからないと言われたら、インストールのスクリプトが表示した 1 行をシェルの設定に足してください。初回は Enter を 3 回押します。表示の言語、LLM、いまいるブランチの順に決まります。2 回目からは 1 回で始まります。ツアーを書くのに 2〜5 分かかります。できたら **→** と **←** で進んだり戻ったりし、**q** で終わります。
+
+ほかの入れ方は「[インストール](#インストール)」に、試しに使える例のリポジトリは「[初回の流れ](#初回の流れ)」にあります。
+
 ## どんなツールか
 
 AI に頼めば、動くコードはできます。でも、なぜそう書いたのか、レビューする人が何を気にするのかまでは教えてくれません。
@@ -161,7 +175,7 @@ Expand-Archive "$env:TEMP\$zip" -DestinationPath $dir -Force
 
 入ったかどうかは `tour --version` で確かめられます。
 
-## はじめかた
+## 初回の流れ
 
 git と、次のどれか 1 つ（インストールしてログイン済みのもの）が必要です。
 
