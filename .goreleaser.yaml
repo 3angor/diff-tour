@@ -62,7 +62,7 @@ homebrew_casks:
 
 changelog:
   use: git
-  sort: asc
+  # Keep git's order (newest first). "asc" sorts the messages alphabetically, not by date.
   format: "{{ .Message }}"
   filters:
     exclude:
