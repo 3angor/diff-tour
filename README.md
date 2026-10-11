@@ -91,6 +91,7 @@ Sending your code to an LLM is a real decision, so here is exactly what happens.
 
 - the files of your repository at the two commits being compared, the diff, and the commit messages. Only tracked files, plus untracked files that are not ignored when you tour uncommitted changes
 - the prompt in [`internal/generate/prompts`](internal/generate/prompts)
+- when you press <kbd>?</kbd>: your question and the whole tour, with the same files
 
 They go to the provider of that tool (Anthropic, OpenAI or Google), under the terms of your account with them. `tour` itself makes no network requests, has no server, and collects no telemetry.
 
@@ -232,6 +233,7 @@ tour
 | --- | --- |
 | <kbd>→</kbd> <kbd>Space</kbd> <kbd>Enter</kbd> | Next step |
 | <kbd>←</kbd> <kbd>Backspace</kbd> | Previous step |
+| <kbd>?</kbd> | Ask about this step: pick a suggested question or type your own. The answer becomes the next step |
 | <kbd>o</kbd> | Open the code of this step in your editor |
 | <kbd>↑</kbd> <kbd>↓</kbd> | Scroll, when a step does not fit on the screen |
 | <kbd>q</kbd> | Quit |
@@ -244,6 +246,7 @@ tour
 - database schemas before and after the change, computed by applying the migrations to an in-memory SQLite database (SQLite migrations only for now)
 - tables of example data
 - questions to think about before the answer appears on the next step
+- answers to your own questions about a step, saved with the tour (when you play a tour file, they last only until you quit)
 
 Every explanation is labeled with how it is known:
 

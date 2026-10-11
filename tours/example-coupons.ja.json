@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "title": "クーポンの適用：上限の「回数」は何を数えているか",
+  "title": "クーポンの適用：上限は守れている、では何を 1 回と数えているか",
   "base": "main",
   "head": "feature/coupons",
   "chapters": [
@@ -8,21 +8,17 @@
       "title": "対象",
       "steps": [
         {
-          "title": "クーポンを足す 2 つのコミット",
+          "title": "対象の変更",
           "blocks": [
             {
               "target": true
             },
             {
-              "quote": "Apply coupon discounts at checkout and add a coupon API\nPOST /orders/:id/coupon takes a coupon code and attaches a discount to the order. Checkout charges the total minus the discount."
+              "quote": "Apply coupon discounts at checkout and add a coupon API\n\nPOST /orders/:id/coupon takes a coupon code and attaches a discount to the order. Checkout charges the total minus the discount."
             },
             {
-              "p": "2 つのコミットはどちらも Claude が共同の作者になっている。コミットメッセージに書いてあるのは「何をしたか」だけで、二度押しや期限の扱いのような「何を約束するか」は書かれていない。",
+              "p": "コミットは 2 つある。1 つ目でクーポンの表と適用の処理を足し、2 つ目で API と、決済での値引きを足している。どちらも Claude との共同作成と書かれている。",
               "basis": "fact"
-            },
-            {
-              "p": "AI が書いた説明は、正しくても足りないことがある。このツアーでは、メッセージに書かれていない約束をコードから読み取りにいく。",
-              "basis": "opinion"
             }
           ]
         }
@@ -32,31 +28,68 @@
       "title": "何のための変更か",
       "steps": [
         {
-          "title": "行を読む前に、仮説を立てる",
+          "title": "誰が何に困らなくなるか",
+          "asks": [
+            "クーポンは誰がどうやって作るの？"
+          ],
           "blocks": [
             {
-              "p": "店がクーポンコードを発行する。コードには割引額、使える回数、期限がある。客はカートの注文にコードを当て、会計では割り引いた額を払う。",
+              "p": "コミットメッセージによると、客は `POST /orders/:id/coupon` でコードを送って注文に割引を付ける。決済では、合計から割引を引いた額が請求される。",
               "basis": "fact"
             },
             {
-              "p": "困らなくなるのは、販促をしたい店の人と、安く買いたい客。ただし、お金が絡む機能は「安くしすぎない」約束も同じくらい大事になる。店にとっては、回数の上限と期限が守られないことが損になる。",
-              "basis": "opinion"
-            },
-            {
-              "p": "この仮説から、以降の章で確かめることを先に書いておく。",
+              "p": "困らなくなるのは、販促をしたい店の側である。期限（expires_at）と使える回数（max_uses）を決めたクーポンを配れるようになる。",
               "basis": "inferred"
             },
             {
-              "list": [
-                "使える回数の上限は守られるか",
-                "期限切れのコードは使えないか",
-                "請求額は負にならないか",
-                "既存の会計と、突き合わせのバッチの約束を壊していないか"
-              ]
+              "rows": {
+                "label": "coupons（説明用の 1 枚）",
+                "head": [
+                  "code",
+                  "discount_amount",
+                  "max_uses",
+                  "used_count",
+                  "expires_at"
+                ],
+                "data": [
+                  [
+                    "WELCOME",
+                    "500",
+                    "100",
+                    "0",
+                    "2026-12-31T00:00:00Z"
+                  ]
+                ]
+              }
             },
             {
-              "p": "4 つ目はジュニアが見落としやすい。差分にない `reconcilePendingPayments` や冪等キーまで見に行かないと決まらないからだ。",
-              "basis": "opinion"
+              "rows": {
+                "label": "orders：WELCOME を適用したあと",
+                "head": [
+                  "id",
+                  "total_amount",
+                  "status",
+                  "coupon_code",
+                  "discount_amount"
+                ],
+                "data": [
+                  [
+                    "o1",
+                    "3000",
+                    "CART",
+                    "WELCOME",
+                    "500"
+                  ]
+                ],
+                "added": [
+                  "coupon_code",
+                  "discount_amount"
+                ]
+              }
+            },
+            {
+              "p": "最初の仮説は 2 つ。(1) max_uses = 100 のクーポンは、100 件の注文で使える。(2) 決済では 3000 − 500 = 2500 円が請求される。以降の章で、この 2 つをコードで確かめる。",
+              "basis": "inferred"
             }
           ]
         }
@@ -66,46 +99,160 @@
       "title": "全体の地図",
       "steps": [
         {
-          "title": "処理の流れ：差分にないものも描く",
+          "title": "変更したファイルと、時間の配分",
           "blocks": [
             {
-              "pre": "POST /orders/:id/coupon      （新規）\n  server.ts  readJson → handleApplyCoupon\n    CouponService.apply\n      orders.get   → 状態の確認\n      coupons.get  → 期限の確認\n      coupons.consumeUse → used_count を +1\n      orders.save（coupon_code, discount_amount）\n\nPOST /orders/:id/checkout    （変更は 1 行）\n  OrderService.checkout\n    save(PENDING_PAYMENT)\n    charge(total - discount, key = order-{id})\n    → PAID / PAYMENT_FAILED / PENDING_PAYMENT のまま\n\nreconcilePendingPayments    （変更なし・5 分ごと）\n  findCharge(order-{id}) → PAID / PAYMENT_FAILED"
+              "files": {
+                "roles": [
+                  {
+                    "file": "src/coupons/couponService.ts",
+                    "role": "core",
+                    "note": "apply の 17 行。ここに一番時間を使う"
+                  },
+                  {
+                    "file": "src/coupons/sqliteCouponRepository.ts",
+                    "role": "core",
+                    "note": "consumeUse の UPDATE 1 文"
+                  },
+                  {
+                    "file": "src/orders/orderService.ts",
+                    "role": "core",
+                    "note": "請求額の 1 行"
+                  },
+                  {
+                    "file": "db/migrations/002_add_coupons.sql",
+                    "role": "core",
+                    "note": "新しい表と orders の 2 列"
+                  },
+                  {
+                    "file": "src/handlers/applyCoupon.ts",
+                    "role": "mechanical",
+                    "note": "checkout.ts と同じ形の、エラーから状態コードへの対応"
+                  },
+                  {
+                    "file": "src/server.ts",
+                    "role": "mechanical",
+                    "note": "ルートの追加と readJson"
+                  },
+                  {
+                    "file": "src/coupons/coupon.ts",
+                    "role": "mechanical",
+                    "note": "型とエラーのクラス"
+                  },
+                  {
+                    "file": "src/orders/order.ts",
+                    "role": "mechanical",
+                    "note": "2 つの項目の追加"
+                  },
+                  {
+                    "file": "src/orders/sqliteOrderRepository.ts",
+                    "role": "mechanical",
+                    "note": "列の追随"
+                  },
+                  {
+                    "file": "src/app.ts",
+                    "role": "mechanical",
+                    "note": "配線"
+                  },
+                  {
+                    "file": "test/couponService.test.ts",
+                    "role": "test"
+                  },
+                  {
+                    "file": "test/orderService.test.ts",
+                    "role": "test",
+                    "note": "請求額のテストが 1 つ増えた"
+                  },
+                  {
+                    "file": "test/reconcilePendingPayments.test.ts",
+                    "role": "test",
+                    "note": "discountAmount: 0 の追加だけ"
+                  },
+                  {
+                    "file": "test/sqliteOrderRepository.test.ts",
+                    "role": "test",
+                    "note": "discountAmount: 0 の追加だけ"
+                  }
+                ]
+              }
             },
             {
-              "p": "冪等キーは注文 ID だけで作る。金額はキーに入っていない。checkout と突き合わせのバッチは、このキーで同じ課金を指す。",
+              "p": "頭を使って読むのは 4 か所だけ。CouponService.apply の 17 行、consumeUse の UPDATE 1 文、checkout の請求額の 1 行、マイグレーションの 10 行である。",
               "basis": "fact"
             },
             {
-              "code": {
-                "file": "src/orders/order.ts",
-                "lines": [
-                  16,
-                  22
-                ],
-                "note": "変更なし"
-              }
+              "p": "既存の 3 つのテストファイルの差分は、注文を作る所に `discountAmount: 0` を足しただけで、期待値は 1 つも変わっていない。Order 型に必須の項目が増えたことへの追随で、機械的だと言える。",
+              "basis": "fact"
             }
           ]
         },
         {
-          "title": "どこに時間を使うか",
+          "title": "処理の流れ：適用と決済は表でつながる",
+          "asks": [
+            "適用と決済が同じ注文に同時に来ることはある？"
+          ],
           "blocks": [
             {
-              "p": "差分は 13 ファイルある。頭を使うのは `couponService.ts` の `apply`（18 行）と、`consumeUse` の SQL 1 行、checkout の引き算 1 行だけ。",
-              "basis": "fact"
-            },
-            {
-              "p": "残りは機械的な変更になる。`Order` に `discountAmount` を必須で足したので、既存のテスト 4 ファイルにある `save({...})` に `discountAmount: 0` が加わった。どれも同じ形で、`assert` の期待値は 1 つも変わっていない。",
-              "basis": "fact"
-            },
-            {
-              "diff": {
-                "file": "test/reconcilePendingPayments.test.ts"
+              "flow": {
+                "nodes": [
+                  {
+                    "label": "POST /orders/:id/coupon",
+                    "kind": "changed",
+                    "note": "src/server.ts",
+                    "next": "orderId, body",
+                    "start": true
+                  },
+                  {
+                    "label": "handleApplyCoupon",
+                    "kind": "new",
+                    "note": "code の検査とエラーの対応",
+                    "next": "orderId, code"
+                  },
+                  {
+                    "label": "CouponService.apply",
+                    "kind": "new",
+                    "note": "状態 → 期限 → 使用回数 → 保存"
+                  },
+                  {
+                    "label": "SQLite：coupons / orders",
+                    "kind": "external",
+                    "note": "used_count + 1、coupon_code、discount_amount"
+                  },
+                  {
+                    "label": "POST /orders/:id/checkout",
+                    "kind": "same",
+                    "start": true
+                  },
+                  {
+                    "label": "OrderService.checkout",
+                    "kind": "changed",
+                    "note": "請求額 = total − discount",
+                    "next": "amount, idempotencyKey"
+                  },
+                  {
+                    "label": "決済サービス",
+                    "kind": "external"
+                  },
+                  {
+                    "label": "reconcilePendingPayments",
+                    "kind": "same",
+                    "note": "5 分ごと。冪等キーで請求を探す",
+                    "start": true
+                  }
+                ]
               }
             },
             {
-              "p": "AI が書いた変更では、テストの差分を先に疑う。期待値が書き換わっていないことを確かめたので、ここは短く済ませてよい。リポジトリの列の追加（`sqliteOrderRepository.ts`）と `app.ts` の配線も、同じく形どおりになっている。",
+              "p": "適用と決済は別々の要求で、直接は呼び合わない。2 つをつなぐのは orders 表の discount_amount だけである。",
               "basis": "fact"
+            },
+            {
+              "p": "照合のバッチは冪等キーで請求を探すだけで、金額を見ない（src/jobs/reconcilePendingPayments.ts:22-31）。この変更のために読み直す必要はない。",
+              "basis": "fact"
+            },
+            {
+              "p": "この地図を 1 文で言うと、クーポンは決済の前に注文へ割引額を書き込み、決済はその額を信じて差し引く。",
+              "basis": "inferred"
             }
           ]
         }
@@ -115,125 +262,186 @@
       "title": "仕組み",
       "steps": [
         {
-          "title": "スキーマ：外部キーは本当に効くか",
+          "title": "まず差分の外：決済の側の約束",
           "blocks": [
             {
-              "diff": {
-                "file": "db/migrations/002_add_coupons.sql"
+              "p": "apply が正しいかは、決済の側が何を約束しているかを見ないと決まらない。だから、差分の外にある checkout を先に開く。",
+              "basis": "inferred"
+            },
+            {
+              "code": {
+                "file": "src/orders/orderService.ts",
+                "lines": [
+                  37,
+                  41
+                ],
+                "show": [
+                  30,
+                  41
+                ],
+                "note": "この範囲は変更なし",
+                "marks": [
+                  {
+                    "line": 33,
+                    "text": "決済に進めるのは CART と PAYMENT_FAILED だけ"
+                  },
+                  {
+                    "line": 40,
+                    "text": "請求の前に「支払い中」を保存する"
+                  }
+                ]
               }
             },
             {
-              "p": "`REFERENCES coupons (code)` は、書いただけでは SQLite で効かない。効くかどうかは、接続を開く処理が決める。そこで `db.ts` を見に行く。",
-              "basis": "opinion"
+              "list": [
+                "二重の決済は、状態の確認と「先に PENDING_PAYMENT を保存」の 2 つで防ぐ（37〜39 行のコメント）",
+                "冪等キーは注文 ID だけから作る（src/orders/order.ts の paymentKeyFor）",
+                "拒否されたら PAYMENT_FAILED にして、やり直しを許す（既存のテスト）",
+                "金額は整数の円で持つ。total_amount >= 0 は DB の CHECK で守る（db/migrations/001_create_orders.sql:5）"
+              ]
+            },
+            {
+              "p": "apply の状態の条件（src/coupons/couponService.ts:21）は、checkout の 33 行と同じである。決済に進める注文にだけ割引を付けられる、という対応になっている。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "データの形：新しい表と 2 つの列",
+          "blocks": [
+            {
+              "schema": {
+                "migrations": "db/migrations",
+                "tables": [
+                  "coupons",
+                  "orders"
+                ],
+                "focus": [
+                  "orders.coupon_code",
+                  "orders.discount_amount"
+                ]
+              }
+            },
+            {
+              "p": "orders.coupon_code は coupons.code を参照している。外部キーは宣言しただけで効くとは限らないので、接続の初期化を見に行く。db.ts の 10 行で ON にしているので、この参照は効く。",
+              "basis": "fact"
             },
             {
               "code": {
                 "file": "src/db.ts",
-                "at": "base",
                 "lines": [
                   10,
                   10
                 ],
                 "show": [
                   8,
-                  21
+                  11
                 ],
                 "note": "変更なし"
               }
             },
             {
-              "p": "接続を開くたびに `foreign_keys = ON` にしているので、存在しないコードを `coupon_code` に入れれば弾かれる。マイグレーションは BEGIN と COMMIT で包まれているので、途中で失敗すれば丸ごと戻る。",
-              "basis": "fact"
-            },
-            {
-              "p": "既存の注文には `DEFAULT 0` が入るので、クーポンなしの注文の請求額は変わらない。",
+              "p": "既存の注文の discount_amount は、DEFAULT 0 で 0 になる。変更前からある注文の請求額は変わらない。",
               "basis": "fact"
             }
           ]
         },
         {
-          "title": "apply の確認の順番",
+          "title": "consumeUse：上限の確認と加算を 1 文で",
+          "asks": [
+            "changes が 2 以上になることはある？"
+          ],
+          "blocks": [
+            {
+              "code": {
+                "file": "src/coupons/sqliteCouponRepository.ts",
+                "lines": [
+                  35,
+                  39
+                ],
+                "show": [
+                  31,
+                  40
+                ],
+                "marks": [
+                  {
+                    "line": 37,
+                    "text": "残りがある行だけを +1 する"
+                  },
+                  {
+                    "line": 39,
+                    "text": "更新できたかどうかで成否を返す"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "WHERE に `used_count < max_uses` を入れているので、上限に達した行は更新されない。そのとき changes は 0 になり、false が返る。",
+              "basis": "fact"
+            },
+            {
+              "p": "「SELECT で数えて、残っていれば UPDATE」と 2 文で書くと、確認と書き込みの間に別の要求が入る隙間ができる。条件付きの UPDATE 1 文なら、その隙間がない。",
+              "basis": "opinion"
+            },
+            {
+              "p": "だから、複数のプロセスがこの表を同時に更新しても、used_count は max_uses を超えない。コメントの主張は、この意味で正しい。",
+              "basis": "inferred"
+            },
+            {
+              "p": "テストは、この SQL を本物の SQLite（`:memory:`）で通している（test/couponService.test.ts:12）。DB を mock していないので、WHERE の条件を消せば、使用上限のテストが落ちるはずである。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "apply と、決済の 1 行",
           "blocks": [
             {
               "code": {
                 "file": "src/coupons/couponService.ts",
                 "lines": [
+                  25,
+                  33
+                ],
+                "show": [
                   18,
                   35
+                ],
+                "marks": [
+                  {
+                    "line": 21,
+                    "text": "checkout と同じ状態の条件"
+                  },
+                  {
+                    "line": 27,
+                    "text": "期限ちょうどの時刻は期限切れ"
+                  },
+                  {
+                    "line": 28,
+                    "text": "使用回数を 1 つ消費する"
+                  },
+                  {
+                    "line": 32,
+                    "text": "割引は合計を超えない"
+                  }
                 ]
               }
             },
-            {
-              "p": "注文が会計できる状態か → コードがあるか → 期限内か → 回数を 1 つ消費する → 割引を合計で頭打ちにして保存する、の順で進む。`Math.min` があるので、割引 5000 円を 3000 円の注文に当てても、請求は 0 円で止まる。テスト `caps the discount at the order total` がこれを確かめている。",
-              "basis": "fact"
-            },
-            {
-              "p": "回数の上限を見ているのは 28 行目の `consumeUse` だけで、apply 自身は `usedCount` を読んでいない。",
-              "basis": "fact"
-            }
-          ]
-        },
-        {
-          "title": "上限 1 回のクーポンに、2 つの注文から同時に",
-          "question": true,
-          "blocks": [
-            {
-              "p": "`max_uses = 1` のクーポン WELCOME がある。客 A の注文 o1 と、客 B の注文 o2 から、ほぼ同時に WELCOME を当てる要求が来た。"
-            },
-            {
-              "code": {
-                "file": "src/coupons/sqliteCouponRepository.ts",
-                "lines": [
-                  31,
-                  40
-                ]
-              }
-            },
-            {
-              "p": "両方とも通って `used_count` が 2 になることはあるだろうか？ どの行のおかげで、あるいはどの行のせいで、そうなるだろうか？"
-            }
-          ]
-        },
-        {
-          "title": "答え：1 本の UPDATE が確認と書き込みを兼ねている",
-          "blocks": [
-            {
-              "p": "両方は通らない。`WHERE used_count \u003c max_uses` の条件と `+ 1` が 1 つの UPDATE の中にあるので、確認と書き込みの間に隙間がない。o1 の UPDATE で 1 になったあと、o2 の UPDATE は条件に合わず、`changes` が 0 になる。そして `CouponUsedUpError` を投げる。",
-              "basis": "fact"
-            },
-            {
-              "p": "よくある書き方は、SELECT で `usedCount \u003c maxUses` を確かめてから UPDATE するものだ。この書き方は、2 本の要求が両方とも確認を通ってしまう。それを避けているのは良い点になる。",
-              "basis": "opinion"
-            },
-            {
-              "p": "テスト `rejects a coupon that has reached its use limit` は、2 回目が弾かれることに加えて、`usedCount` が 1 のままであることも確かめている。WHERE の条件を消せば、このテストは落ちる。",
-              "basis": "fact"
-            },
-            {
-              "p": "確認と書き込みを 1 つの条件付き更新にまとめる、この形を **条件付き更新（compare-and-set）** と呼ぶ。",
-              "basis": "opinion"
-            }
-          ]
-        },
-        {
-          "title": "会計の側：変わったのは 1 行",
-          "blocks": [
             {
               "diff": {
-                "file": "src/orders/orderService.ts"
+                "file": "src/orders/orderService.ts",
+                "hunks": [
+                  0
+                ]
               }
             },
             {
-              "p": "請求額は `totalAmount - discountAmount` になった。テスト `charges the total minus the discount` は 2500 を期待しているので、この行を元に戻せば落ちる。",
-              "basis": "fact"
-            },
-            {
-              "p": "突き合わせのバッチは `findCharge(paymentKeyFor(order))` で課金があるかを見るだけで、金額は比べない。なので、このバッチを直す必要はない。",
-              "basis": "fact"
-            },
-            {
-              "p": "この章を 1 文で言うと、「回数の上限は DB の 1 文で守られ、請求額は合計 − 割引になり、0 円より下には下がらない」。",
+              "p": "決済の 1 行を元に戻すと、請求額は 3000 になり、新しいテスト `charges the total minus the discount`（期待値 2500）が落ちるはずである。肝心の 1 行はテストで守られている。",
               "basis": "inferred"
+            },
+            {
+              "p": "この章を 1 文で言うと、期限内で残りのあるクーポンだけを決済前の注文に付け、決済ではその割引を引いた額を請求する、と約束している。",
+              "basis": "fact"
             }
           ]
         }
@@ -243,203 +451,390 @@
       "title": "シニアならここで手が止まる",
       "steps": [
         {
-          "title": "同じ注文に、同じコードがもう一度届いたら",
+          "title": "max_uses = 3 のクーポンを、4 人目は使えるか",
           "question": true,
           "blocks": [
             {
-              "p": "客が WELCOME（`max_uses = 100`、`used_count = 0`）を自分の注文 o1 に当てた。ボタンを二度押したので、`POST /orders/o1/coupon {\"code\":\"WELCOME\"}` が 2 回届いた。"
-            },
-            {
-              "p": "前の手順で、上限は 1 本の UPDATE で守られていると確かめた。2 回目の要求のあと、`used_count` はいくつになっているだろうか？ 2 回目の応答は何だろうか？"
-            }
-          ]
-        },
-        {
-          "title": "答え：2 になる。上限が数えているのは「当てた回数」",
-          "blocks": [
-            {
-              "p": "2 回目も、状態は CART、コードもある、期限内なので確認はすべて通る。28 行目の `consumeUse` がもう一度 UPDATE を流し、`used_count` は 2 になる。応答は 2 回とも 200 を返す。apply は、注文にすでにクーポンが付いているかを見ていない。",
-              "basis": "fact"
-            },
-            {
-              "code": {
-                "file": "src/coupons/couponService.ts",
-                "lines": [
-                  28,
-                  30
-                ]
-              }
-            },
-            {
-              "list": [
-                "二度押し・再送：1 つの注文で回数を 2 つ消費する",
-                "WELCOME から SUMMER に替える：30 行目で上書きされ、WELCOME の消費は戻らない",
-                "同じ o1 に 100 回 POST：上限まで使い切られ、ほかの客は全員 coupon_used_up になる"
-              ]
-            },
-            {
-              "p": "どのルートにも認証や所有者の確認はない（base の `server.ts` から同じ）。なので 3 つ目は、注文 ID を 1 つ持っている人なら誰でもできる。利用者の操作だけで、お金に関わる上限が壊れる。重さは **必須** にする。",
-              "basis": "fact"
-            },
-            {
-              "p": "テストがこれを捕まえなかったのは、上限のテストが o1 と o2 という別々の注文で試しているからだ。前の手順のコメント「同時に使っても上限を超えない」は本当だが、守っているのは「回数の合計」で、「1 注文につき 1 回」は約束していない。",
-              "basis": "fact"
-            },
-            {
-              "p": "この操作は 2 回届いても同じ結果になるようにできていない。つまり **冪等ではない**。",
-              "basis": "inferred"
-            }
-          ]
-        },
-        {
-          "title": "直し方と、それで本当に防げるか",
-          "blocks": [
-            {
-              "snippet": {
-                "label": "修正案（このリポジトリにないコード）",
-                "lang": "typescript",
-                "text": "// 二度押しや再送では、回数を消費しない\nif (order.couponCode === code) return order;\nif (order.couponCode) throw new CouponAlreadyAppliedError(order.couponCode);\n...\n// consumeUse と orders.save を 1 つのトランザクションに入れる\n// （db.ts のマイグレーションと同じ BEGIN / COMMIT / ROLLBACK の形）"
-              }
-            },
-            {
-              "p": "具体的な値で追う。二度押し：1 回目は `couponCode` がないので消費して 1 になる。2 回目は `couponCode === 'WELCOME'` なので消費せずに返し、1 のまま。SUMMER への付け替え：409 で止まり、WELCOME は 1 のまま。100 回の POST：1 回目のあとは全部、消費せずに返る。",
-              "basis": "inferred"
-            },
-            {
-              "p": "「確かめてから書く」の隙間に 2 本目が入る心配は、このプロセスの中ではない。`readJson` を待ったあとの apply は同期の SQLite を呼ぶだけなので、別の要求が途中に割り込まない。ただしこれは今の作りに頼った保証だ。DB を非同期のものに替えるなら、`UPDATE orders ... WHERE coupon_code IS NULL` の条件付き更新に寄せる。",
-              "basis": "inferred"
-            },
-            {
-              "p": "トランザクションに入れると、消費したあと保存の前に落ちても、消費ごと戻る。入れなければ、回数だけ減って注文には付いていない、という状態が残る。",
-              "basis": "inferred"
-            },
-            {
-              "p": "この案でも防げないものが 1 つ残る。捨てられたカートは、回数を 1 つ持ったままになる。「当てたとき」に数えるか「支払ったとき」に数えるかは、プロダクトとして決めることなので **問い** として出す。",
-              "basis": "inferred"
-            }
-          ]
-        },
-        {
-          "title": "写された状態の確認：PAYMENT_FAILED に当ててよいか",
-          "blocks": [
-            {
-              "p": "apply の状態の確認は、checkout の 33 行目と一字一句同じだ。checkout ではこの条件は「決済してよい注文か」を意味していた。apply では「金額を変えてよい注文か」を意味することになる。",
-              "basis": "fact"
-            },
-            {
-              "code": {
-                "file": "src/payment/gateway.ts",
-                "at": "base",
-                "lines": [
-                  6,
-                  7
-                ],
-                "note": "変更なし"
-              }
-            },
-            {
-              "pre": "1. checkout  3000 円  key=order-o1  → 402 拒否\n   → PAYMENT_FAILED\n2. apply WELCOME → 割引 500（PAYMENT_FAILED なので通る）\n3. checkout  2500 円  key=order-o1  ← 同じキーで金額だけ違う"
-            },
-            {
-              "p": "コメントには「同じキーの要求は 1 つの課金として扱う」とある。同じキーで金額が違う要求を、決済サービスがどう扱うかは、渡されたファイルからは分からない。",
-              "basis": "fact"
-            },
-            {
-              "p": "こちらのコードで決まる部分もある。返事が 400 や 422 なら `httpGateway.ts` の 35〜37 行目で汎用の Error になり、注文は PENDING_PAYMENT のまま、客には 500 が返る。10 分後にバッチが課金なしとして PAYMENT_FAILED に戻す。",
-              "basis": "fact"
-            },
-            {
-              "p": "重さは **問い** にする。マージの前に、決済サービスの仕様（同じキーで金額が違う場合）を確かめる。いちばん単純な避け方は、適用を CART だけに絞ることだ。",
-              "basis": "opinion"
-            }
-          ]
-        },
-        {
-          "title": "期限：読めない日付は「期限切れ」になるか",
-          "blocks": [
-            {
-              "code": {
-                "file": "src/coupons/sqliteCouponRepository.ts",
-                "lines": [
-                  27,
-                  27
-                ],
-                "show": [
-                  19,
-                  29
-                ]
-              }
-            },
-            {
-              "p": "`expires_at` は `TEXT NOT NULL` で、形式の決まりがない。リポジトリにはクーポンを作る API がなく、`INSERT INTO coupons` はテストにしかない。本番のクーポンは、人が SQL で入れることになる。",
-              "basis": "fact"
-            },
-            {
-              "p": "`'2026/12/31 まで'` のような読めない値が入ると、`new Date` は Invalid Date を返す。`Invalid Date \u003c= now` は常に false なので、27 行目は期限切れを投げない。つまり、そのクーポンは永久に使える。失敗が「通す」側に倒れている。",
-              "basis": "inferred"
-            },
-            {
-              "p": "`'2026-12-31'` のように日付だけの値は、JavaScript では UTC の 0 時として読まれる。日本時間では 31 日の 9:00 に期限が切れる。",
-              "basis": "inferred"
-            },
-            {
-              "p": "重さは **提案** にする。`if (!(coupon.expiresAt \u003e this.#now()))` と書けば、NaN でも期限切れに倒れる。あわせて、マイグレーションで形式を CHECK で縛る。",
-              "basis": "opinion"
-            }
-          ]
-        },
-        {
-          "title": "短く挙げる残りの指摘",
-          "blocks": [
-            {
-              "table": {
+              "rows": {
+                "label": "coupons（説明用）",
                 "head": [
-                  "重さ",
-                  "どこ",
-                  "何"
+                  "code",
+                  "discount_amount",
+                  "max_uses",
+                  "used_count",
+                  "expires_at"
                 ],
-                "rows": [
+                "data": [
                   [
-                    "提案",
-                    "002_add_coupons.sql",
-                    "「割引 ≤ 合計」を手順でしか守っていない。001 は total_amount \u003e= 0 を CHECK で守っている。今は合計を変える経路がない（grep で確認）"
-                  ],
-                  [
-                    "問い",
-                    "couponService.ts:32",
-                    "割引が合計と同じだと 0 円の請求になる。決済サービスが 0 円を受け付けるかは外部の仕様しだい"
-                  ],
-                  [
-                    "問い",
-                    "orderService.ts",
-                    "適用したあとでクーポンが期限切れになっても、会計では確かめ直さない。それでよいかはプロダクトの決め事"
-                  ],
-                  [
-                    "Nit",
-                    "server.ts:9-13",
-                    "壊れた JSON は 400 ではなく 500 になる。本文の大きさに上限がない"
-                  ],
-                  [
-                    "Nit",
-                    "couponService.ts:8",
-                    "SqliteCouponRepository の具体的な型に依存している。orders 側は interface を介している"
-                  ],
-                  [
-                    "Nit",
-                    "couponService.ts:22",
-                    "InvalidOrderStateError の文言が \"cannot be checked out\" のまま"
-                  ],
-                  [
-                    "Nit",
-                    "README.md",
-                    "新しいルート POST /orders/:id/coupon が書かれていない"
+                    "WELCOME",
+                    "500",
+                    "3",
+                    "0",
+                    "2026-12-31T00:00:00Z"
                   ]
                 ]
               }
             },
             {
-              "p": "テストでは、同じ注文への再適用、期限ちょうどの境目、ハンドラの状態コードへの対応付けが試されていない。",
+              "p": "客 A が、自分のカート o1 に WELCOME を適用する。画面の反応が遅いので、適用のボタンを 3 回押した。3 回とも 200 が返り、o1 の割引は 500 円になっている。"
+            },
+            {
+              "p": "そのあと客 B が、自分のカート o2 に WELCOME を適用する。客 B の要求は通るだろうか。そのとき、coupons の used_count はいくつになっているだろうか。"
+            }
+          ]
+        },
+        {
+          "title": "答え：客 B は 409 coupon_used_up で断られる",
+          "asks": [
+            "used_count を手で減らして直せば済まない？"
+          ],
+          "blocks": [
+            {
+              "timeline": {
+                "lanes": [
+                  "客 A",
+                  "客 B",
+                  "CouponService",
+                  "coupons 表"
+                ],
+                "events": [
+                  {
+                    "lane": "客 A",
+                    "to": "CouponService",
+                    "text": "apply(o1, WELCOME)"
+                  },
+                  {
+                    "lane": "CouponService",
+                    "to": "coupons 表",
+                    "text": "used_count 0 → 1",
+                    "mark": "ok"
+                  },
+                  {
+                    "lane": "客 A",
+                    "to": "CouponService",
+                    "text": "apply(o1, WELCOME) 2 回目"
+                  },
+                  {
+                    "lane": "CouponService",
+                    "to": "coupons 表",
+                    "text": "used_count 1 → 2",
+                    "mark": "bad"
+                  },
+                  {
+                    "lane": "客 A",
+                    "to": "CouponService",
+                    "text": "apply(o1, WELCOME) 3 回目"
+                  },
+                  {
+                    "lane": "CouponService",
+                    "to": "coupons 表",
+                    "text": "used_count 2 → 3",
+                    "mark": "bad"
+                  },
+                  {
+                    "lane": "客 B",
+                    "to": "CouponService",
+                    "text": "apply(o2, WELCOME)"
+                  },
+                  {
+                    "lane": "coupons 表",
+                    "text": "used_count < max_uses が偽。0 行更新"
+                  },
+                  {
+                    "lane": "CouponService",
+                    "to": "客 B",
+                    "text": "CouponUsedUpError → 409",
+                    "mark": "bad"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "apply は、注文にすでにクーポンが付いているかを見ないまま consumeUse を呼ぶ（src/coupons/couponService.ts:28）。o1 に付く割引は 500 円 1 回分だけなのに、used_count は 3 増える。仮説 (1) の「100 件の注文で使える」は成り立たない。max_uses が数えているのは、注文の数ではなく、適用の要求の数である。",
               "basis": "fact"
+            },
+            {
+              "p": "同じことは、ほかの入口からも起きる。used_count を減らす処理は、このリポジトリのどこにもない。",
+              "basis": "fact"
+            },
+            {
+              "list": [
+                "コードを A から B に変えると、A で増えた 1 回は戻らない",
+                "決済が拒否された注文（PAYMENT_FAILED）に同じコードを送り直すと、また 1 増える",
+                "クーポンを付けたまま放置されたカートも、1 回分を持ったままになる"
+              ]
+            }
+          ]
+        },
+        {
+          "title": "重さ：必須。テストはどこまで見ていたか",
+          "asks": [
+            "二重送信は、フロントでボタンを無効にすれば防げない？"
+          ],
+          "blocks": [
+            {
+              "code": {
+                "file": "test/couponService.test.ts",
+                "lines": [
+                  48,
+                  49
+                ],
+                "show": [
+                  46,
+                  51
+                ],
+                "marks": [
+                  {
+                    "line": 48,
+                    "text": "1 回目は o1"
+                  },
+                  {
+                    "line": 49,
+                    "text": "2 回目は別の注文 o2"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "使用上限のテストは、別々の注文 o1 と o2 に 1 回ずつ適用している。同じ注文への 2 回目は、どのテストも試していない。",
+              "basis": "fact"
+            },
+            {
+              "p": "server.ts は注文 ID だけを見てルートを決め、認可の確認はない（checkout も同じで、変更前からの形）。他人の注文 ID でも同じ要求を送れるので、数の限られたクーポンを、1 人が何度も送るだけで使い切れる。",
+              "basis": "fact"
+            },
+            {
+              "p": "重さは必須にする。販促の予算というお金に関わり、客の操作だけで起き、このリポジトリのコードだけで、壊れる入力（同じ注文に 2 回）を示せるからである。",
+              "basis": "fact"
+            },
+            {
+              "p": "この問いには名前がある。冪等性、つまり 2 回届いても壊れないか。`used_count + 1` は、同じ要求が 2 回届けば 2 回効く。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "直し方を、具体的な値で確かめる",
+          "asks": [
+            "consumeUse と save のトランザクションは、どのクラスに持たせる？"
+          ],
+          "blocks": [
+            {
+              "snippet": {
+                "label": "このリポジトリにないコード（修正案。apply の中、consumeUse の前）",
+                "lang": "typescript",
+                "text": "// 同じ注文への 2 回目は数え直さない\nif (order.couponCode === code) return order;\n// 付け替えは、外す処理を作るまで断る\nif (order.couponCode) throw new CouponAlreadyAppliedError(order.couponCode);\nif (!(await this.#coupons.consumeUse(code))) throw new CouponUsedUpError(code);"
+              }
+            },
+            {
+              "table": {
+                "head": [
+                  "場合",
+                  "修正後の used_count",
+                  "理由"
+                ],
+                "rows": [
+                  [
+                    "同じコードを 3 回（順に届く）",
+                    "1",
+                    "2 回目からは consumeUse の前に返る"
+                  ],
+                  [
+                    "ほぼ同時の 2 本",
+                    "1（推測）",
+                    "apply は get から save まで I/O を待たないので、2 本目は 1 本目の save のあとを読む"
+                  ],
+                  [
+                    "PAYMENT_FAILED のあと同じコード",
+                    "1",
+                    "coupon_code が残っているので数えない"
+                  ],
+                  [
+                    "A から B への付け替え",
+                    "A の 1 のまま",
+                    "409 で断る。外す API が要るかは仕様の問い"
+                  ],
+                  [
+                    "放置されたカート",
+                    "1 のまま",
+                    "この案では防げない"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "放置されたカートだけは、この案でも防げない。max_uses を「適用の数」と読むか「決済が済んだ数」と読むかは、コードからは決められない。決済の数で数えるなら PAID にする所で数えることになる。そうすると今度は、適用のときには残りがあったのに、決済のときには尽きている場合をどう扱うかを決める必要がある。",
+              "basis": "inferred"
+            },
+            {
+              "p": "consumeUse と orders.save は同じ SQLite の上にあるので、1 つのトランザクションにまとめられる。そうすれば、save が失敗したときに 1 回分が消えることも防げる（提案）。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "決済の途中に適用が来たら（ここは気にしなくてよい）",
+          "asks": [
+            "サーバを 2 プロセスに増やしたら、この話は変わる？"
+          ],
+          "blocks": [
+            {
+              "p": "apply は status を含めて注文を丸ごと save する。だから、checkout と同時に動くと片方の保存が他方を上書きする、という心配は形の上ではありうる。",
+              "basis": "fact"
+            },
+            {
+              "timeline": {
+                "lanes": [
+                  "checkout の要求",
+                  "coupon の要求",
+                  "SQLite",
+                  "決済サービス"
+                ],
+                "events": [
+                  {
+                    "lane": "checkout の要求",
+                    "to": "SQLite",
+                    "text": "get o1（CART）"
+                  },
+                  {
+                    "lane": "checkout の要求",
+                    "to": "SQLite",
+                    "text": "save PENDING_PAYMENT"
+                  },
+                  {
+                    "lane": "checkout の要求",
+                    "to": "決済サービス",
+                    "text": "charge 3000（応答を待つ）"
+                  },
+                  {
+                    "lane": "coupon の要求",
+                    "to": "SQLite",
+                    "text": "get o1"
+                  },
+                  {
+                    "lane": "SQLite",
+                    "to": "coupon の要求",
+                    "text": "status = PENDING_PAYMENT"
+                  },
+                  {
+                    "lane": "coupon の要求",
+                    "text": "InvalidOrderStateError → 409",
+                    "mark": "ok"
+                  },
+                  {
+                    "lane": "決済サービス",
+                    "to": "checkout の要求",
+                    "text": "chargeId"
+                  },
+                  {
+                    "lane": "checkout の要求",
+                    "to": "SQLite",
+                    "text": "save PAID",
+                    "mark": "ok"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "checkout は、決済サービスを待つ前に PENDING_PAYMENT を保存する（src/orders/orderService.ts:40-41）。待っている間に来た適用は、状態の確認で弾かれる。",
+              "basis": "fact"
+            },
+            {
+              "p": "逆向き（apply の途中に checkout が入る）もない。apply の get から save までの await は、どれも同期の DatabaseSync を包んだ Promise で、ほかの要求の I/O が割り込む前に最後まで進む。動かしては確かめていない。",
+              "basis": "inferred"
+            },
+            {
+              "p": "ただし、これは「repository が同期の SQLite である」ことに頼っている。OrderRepository は Promise を返す interface なので、本当に非同期の DB に替えた日に、apply が古い status で上書きする隙間が開く。今は直さず、その前提をコメントに残してもらう程度でよい（Nit）。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "外部しだいの所と、こちらのコードで決まる所",
+          "asks": [
+            "冪等キーに金額を含めれば解決する？"
+          ],
+          "blocks": [
+            {
+              "p": "割引を合計で頭打ちにしたので、割引 5000 円・合計 3000 円の注文は、checkout で `amount: 0` の請求を送る（src/coupons/couponService.ts:32、src/orders/orderService.ts:45）。決済サービスが 0 円の請求をどう扱うかは、このリポジトリからは分からない。",
+              "basis": "inferred"
+            },
+            {
+              "code": {
+                "file": "src/payment/httpGateway.ts",
+                "lines": [
+                  35,
+                  37
+                ],
+                "show": [
+                  28,
+                  37
+                ],
+                "note": "変更なし",
+                "marks": [
+                  {
+                    "line": 35,
+                    "text": "402・5xx・429 以外はここで素の Error になる"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "ただし、こちらのコードで決まる所がある。0 円が 400 で断られたとすると、素の Error になる。checkout の catch は PaymentDeclinedError のときしか保存しないので、注文は PENDING_PAYMENT のまま残り、要求は 500 で終わる。10 分後に照合のバッチが「請求なし」とみて PAYMENT_FAILED にし、客がやり直すと、また 0 円を送る。",
+              "basis": "fact"
+            },
+            {
+              "p": "もう 1 つある。PAYMENT_FAILED の注文にクーポンを付けて決済し直すと、冪等キーは同じ `order-o1` のまま、金額だけが 3000 から 2500 に変わる。同じキーで中身の違う請求を決済サービスがどう扱うかも、外部しだいである。",
+              "basis": "fact"
+            },
+            {
+              "p": "どちらも重さは「問い」にする。お金に関わるが、決めるには決済サービスの文書が要る。マージの前に、0 円の請求と、同じキーで金額を変えた請求の扱いを確かめる。0 円なら決済を呼ばずに PAID にする分岐を、こちらで持つ手もある。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "ほかに見つけたこと（短く）",
+          "blocks": [
+            {
+              "table": {
+                "head": [
+                  "重さ",
+                  "見つけたこと",
+                  "場所"
+                ],
+                "rows": [
+                  [
+                    "提案",
+                    "discount_amount に CHECK がない。001 は total_amount >= 0 を DB で守る慣習。少なくとも >= 0 は DB で守れる",
+                    "db/migrations/002_add_coupons.sql:16"
+                  ],
+                  [
+                    "提案",
+                    "expires_at が読めない文字列だと Invalid Date になり、`<=` が常に偽になって期限切れにならない。Z のない時刻はサーバの時刻帯で読まれる",
+                    "src/coupons/sqliteCouponRepository.ts:27"
+                  ],
+                  [
+                    "Nit",
+                    "壊れた JSON の本文は JSON.parse が投げて、400 でなく 500 になる。本文の大きさの上限もない",
+                    "src/server.ts:12"
+                  ],
+                  [
+                    "Nit",
+                    "InvalidOrderStateError の文言が「checkout できない」のまま、適用でも使われる。ログを読む人が迷う",
+                    "src/orders/orderService.ts:16"
+                  ],
+                  [
+                    "問い",
+                    "README の起動の行は checkout しか書いていない。クーポンを作る API やスクリプトもない。手で INSERT する前提か",
+                    "README.md:7"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "Invalid Date の件は、クーポンを手で INSERT する運用なら、打ち間違い 1 つで期限のないクーポンができる、という意味になる。期限の確認は、失敗したら閉じる側（期限切れ）に倒したい。",
+              "basis": "inferred"
             }
           ]
         },
@@ -447,25 +842,34 @@
           "title": "気にしなくてよいところと、その根拠",
           "blocks": [
             {
-              "list": [
-                "スキーマ変更のロック：DB は SQLite で、マイグレーションはトランザクションの中で流れる（db.ts:17-25）",
-                "SQL の注入：新しいクエリはすべて ? のプレースホルダを使っている",
-                "規模：どのクエリも主キーで 1 行を引く。ループの中のクエリはない",
-                "既存のテスト：discountAmount: 0 を足しただけで、期待値は変わっていない",
-                "突き合わせのバッチ：キーで課金を探すだけで、金額は使わない"
-              ]
+              "table": {
+                "head": [
+                  "気にしそうなこと",
+                  "気にしなくてよい理由（確かめた場所）"
+                ],
+                "rows": [
+                  [
+                    "CouponService が interface でなく SqliteCouponRepository に直接頼る",
+                    "orders に interface があるのは、InMemoryOrderRepository をテストで使うため（src/orders/orderRepository.ts:9）。クーポンは本物の SQLite で SQL まで試しているので、実装が 1 つしかない interface を今足す理由がない"
+                  ],
+                  [
+                    "外部キーが宣言だけで効いていないのでは",
+                    "src/db.ts:10 で foreign_keys を ON にしている"
+                  ],
+                  [
+                    "既存の注文の請求額が変わるのでは",
+                    "002 の DEFAULT 0 で割引は 0。既存のテストの期待値も変わっていない"
+                  ],
+                  [
+                    "戻したら、新しい列の値が消えるのでは",
+                    "古い save は ON CONFLICT で挙げた列だけを更新する（変更前の sqliteOrderRepository.ts:44-49）ので、値は残る。ただし古いコードは割引を無視して全額を請求する"
+                  ]
+                ]
+              }
             },
             {
-              "p": "所有者の確認がないことは重いが、base の checkout にも最初からない。この差分の外で別に直すべきことで、この PR を止める理由にはしない。ただし、再適用の必須を悪用しやすくしているので、指摘の中では触れる。",
+              "p": "この章を 1 文で言うと、使用回数の上限そのものは 1 文の UPDATE で守れているが、「何を 1 回と数えるか」を apply が決めていないので、同じ注文の適用が何度でも数えられる。",
               "basis": "fact"
-            },
-            {
-              "p": "戻すとき：古いコードの save は割引の列に触らないので、すでに付いた割引は残ったまま無視され、全額が請求される。データは壊れないが、客には「割引が消えた」ように見える。",
-              "basis": "inferred"
-            },
-            {
-              "p": "この章を 1 文で言うと、「上限は同時の要求には強いが、同じ注文からの繰り返しには守られておらず、期限と状態の確認には失敗したときに通してしまう隙がある」。",
-              "basis": "inferred"
             }
           ]
         }
@@ -475,18 +879,18 @@
       "title": "まとめ",
       "steps": [
         {
-          "title": "コードベースを良くしたか、どうコメントするか",
+          "title": "この変更はコードベースを良くしたか",
           "blocks": [
             {
-              "p": "このままでは、コードベースを良くしたとは言えない。誰でも POST を繰り返すだけで、クーポンの上限を使い切れるからだ。ただ、骨組み（条件付きの UPDATE、整数の円、1 行で済んだ checkout の変更）は良い。必須の 1 点を直せば、良い変更になる。",
+              "p": "良くした。ただし、必須の 1 つを直してからマージする。クーポンは既存の層（handlers、service、repository、migrations）の形に沿って足されている。決済の変更は 1 行で、変更前の約束（状態の確認、冪等キー、整数の円）は崩していない。",
               "basis": "inferred"
             },
             {
               "list": [
-                "必須：同じ注文に再び当てると used_count がまた増え、付け替えても前の消費は戻らない。注文にクーポンがあれば消費しないようにし、消費と保存を 1 つのトランザクションに入れてほしい。同じ注文に 2 回当てるテストもほしい",
-                "問い：PAYMENT_FAILED に当てると、同じ冪等キー order-{id} のまま金額が変わる。決済サービスはこれを受け付けるか。分からないなら CART だけに絞るのが安全",
-                "提案：expires_at が読めないと Invalid Date になり、期限切れにならない。比較を逆向きに書いて期限切れに倒し、形式も CHECK で縛りたい",
-                "良い点：consumeUse は確認と加算を 1 文にまとめていて、同時の要求でも上限を超えない。テストが usedCount まで確かめているのも良い"
+                "**必須**：apply は、同じ注文への 2 回目でも使用回数を消費する。`order.couponCode` を見てから consumeUse し、同じ注文に 2 回適用するテストを足してほしい（src/coupons/couponService.ts:28）",
+                "**問い**：割引が合計と同じときの 0 円の請求と、PAYMENT_FAILED のあと同じ冪等キーで金額が変わる請求を、決済サービスはどう扱うか。マージの前に文書で確かめたい。あわせて、max_uses は「適用の数」と「決済の数」のどちらの意味か",
+                "**提案**：discount_amount に CHECK を付ける。expires_at が読めないときは期限切れの側に倒す",
+                "**良い点**：consumeUse は条件付きの UPDATE 1 文で上限を守り、それを本物の SQLite のテストで確かめている"
               ]
             }
           ]
@@ -496,13 +900,12 @@
           "blocks": [
             {
               "list": [
-                "行を読む前に「誰が何に困らなくなるか」と「守るべき約束」を仮説として書き、それを確かめるように読んだ",
-                "外部キーが効くかは db.ts、冪等キーの意味は gateway.ts と、差分の外に答えを探しに行った",
-                "テストの差分を先に疑い、期待値が変わっていないことを確かめてから短く済ませた",
-                "「同時でも超えない」というコメントは本当だった。そのうえで、守っている範囲（回数の合計）と、守っていない範囲（1 注文につき 1 回）を分けた",
-                "写された条件を、写した先でも同じ意味になるかで読み直した",
-                "Invalid Date や UTC の 0 時のような具体的な値を入れ、失敗が通す側と止める側のどちらに倒れるかを見た",
-                "外部の仕様しだいの懸念は必須にせず、こちらのコードで決まる部分を切り分けたうえで問いにした"
+                "最初に「何のための変更か」を仮説にし（max_uses は注文の数を制限する）、コードで確かめて直した（実際に数えているのは適用の要求の数）",
+                "差分の外の checkout と初期化（db.ts）を開き、変更前の約束と、宣言が本当に効いているかを確かめた",
+                "「上限は 1 文の UPDATE で守れている」で読むのをやめず、「同じ注文に 3 回」という具体的な値で追った",
+                "修正案を、同時の 2 本、付け替え、放置されたカートで追い、防げない場合を残した",
+                "同時実行の心配は、処理が本当に割り込めるかをコードで確かめてから「気にしなくてよい」と言った",
+                "外部のサービスしだいの所と、こちらのコードで決まる所の境目を引いた"
               ]
             }
           ]
