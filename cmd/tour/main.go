@@ -159,7 +159,17 @@ func run(args []string) error {
 		if !isTerminal() {
 			return fmt.Errorf("%s", i18n.T("needTTY"))
 		}
-		_, err = tea.NewProgram(ui.NewViewer(ctx)).Run()
+		// Questions work when an LLM is set up. Their answers stay only while the tour is open: a file the user gave is never written
+		var asker *ui.Asker
+		if cfg != nil {
+			if backend, err := backendFor(cfg.LLM); err == nil {
+				key := generate.CacheKey(repo, t.Base, t.Head, lang, backend.Name())
+				if work, err := generate.WorkDir(key + "-ask"); err == nil {
+					asker = &ui.Asker{Backend: backend, Req: generate.Request{Repo: repo, Base: t.Base, Head: t.Head, Lang: lang}, WorkDir: work}
+				}
+			}
+		}
+		_, err = tea.NewProgram(ui.NewViewer(ctx, asker)).Run()
 		return err
 	}
 

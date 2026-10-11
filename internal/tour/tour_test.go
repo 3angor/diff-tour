@@ -32,3 +32,19 @@ func TestValidate(t *testing.T) {
 		}
 	}
 }
+
+func TestInsertAfter(t *testing.T) {
+	tr := &Tour{Chapters: []Chapter{{Steps: []Step{{Title: "a"}, {Title: "b"}}}, {Steps: []Step{{Title: "c"}}}}}
+	tr.InsertAfter(1, []Step{{Title: "x"}})
+	tr.InsertAfter(3, []Step{{Title: "y"}})
+	var got []string
+	for _, s := range tr.Steps() {
+		got = append(got, s.Title)
+	}
+	if strings.Join(got, "") != "abxcy" {
+		t.Errorf("got %v", got)
+	}
+	if len(tr.Chapters[0].Steps) != 3 {
+		t.Errorf("x should join the first chapter")
+	}
+}

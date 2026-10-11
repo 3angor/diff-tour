@@ -19,6 +19,8 @@ import (
 type Ctx struct {
 	Tour *tour.Tour
 	Repo *git.Repo
+	// CanAsk shows the key for asking a question.
+	CanAsk bool
 }
 
 // Ref turns "base" / "head" into the commit to read.

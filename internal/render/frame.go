@@ -111,6 +111,11 @@ func Frame(ctx Ctx, steps []tour.FlatStep, index, scroll, cols, rows int, messag
 		titleSpans = append([]text.Span{{Text: " " + i18n.T("question") + " ", Style: "30;43"}, {Text: " "}}, titleSpans...)
 	}
 	title := text.Wrap(titleSpans, inner)
+	if step.Asked != "" {
+		// An answer to the reader's own question: show the question first
+		asked := text.Wrap([]text.Span{{Text: " " + i18n.T("asked") + " ", Style: "30;45"}, {Text: " " + step.Asked, Style: "35"}}, inner)
+		title = append(asked, title...)
+	}
 	var hint []text.Line
 	if step.Question {
 		hint = []text.Line{nil, {{Text: i18n.T("think"), Style: "2;33"}}}
@@ -218,6 +223,9 @@ func Frame(ctx Ctx, steps []tour.FlatStep, index, scroll, cols, rows int, messag
 	}
 	if Location(step, ctx) != nil {
 		keys = append(keys, text.Span{Text: "   " + i18n.T("key.open"), Style: "90"})
+	}
+	if ctx.CanAsk {
+		keys = append(keys, text.Span{Text: "   " + i18n.T("key.ask"), Style: "35"})
 	}
 	keys = append(keys, text.Span{Text: "   " + i18n.T("key.quit"), Style: "90"})
 

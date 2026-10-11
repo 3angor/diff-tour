@@ -188,7 +188,17 @@ func (a *App) start(t Target) tea.Cmd {
 }
 
 func (a *App) openViewer(t *tour.Tour, message string) {
-	a.viewer = NewViewer(render.Ctx{Tour: t, Repo: a.repo})
+	key := a.target.Key
+	var asker *Asker
+	if work, err := generate.WorkDir(key + "-ask"); err == nil {
+		asker = &Asker{
+			Backend: a.backend,
+			Req:     generate.Request{Repo: a.repo, Base: t.Base, Head: t.Head, Lang: a.lang},
+			WorkDir: work,
+			Save:    func(t *tour.Tour) error { return generate.SaveCached(key, t) },
+		}
+	}
+	a.viewer = NewViewer(render.Ctx{Tour: t, Repo: a.repo}, asker)
 	a.viewer.width, a.viewer.height, a.viewer.message = a.width, a.height, message
 	a.screen = screenViewer
 }

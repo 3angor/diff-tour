@@ -168,6 +168,10 @@ type Step struct {
 	Title string `json:"title"`
 	// A step that shows only the question. The answer goes in the next step.
 	Question bool `json:"question,omitempty"`
+	// Questions a reader is likely to have at this step, offered when they press `?`.
+	Asks []string `json:"asks,omitempty"`
+	// Set on a step that answers a reader's question: the question.
+	Asked string `json:"asked,omitempty"`
 	// Where `o` opens. Defaults to the first code block.
 	Open   *Location `json:"open,omitempty"`
 	Blocks []Block   `json:"blocks"`
@@ -303,4 +307,18 @@ func (b Block) checkDiagram() error {
 		}
 	}
 	return nil
+}
+
+// InsertAfter puts steps right after the index-th step (counting across chapters), in the same chapter.
+func (t *Tour) InsertAfter(index int, steps []Step) {
+	n := 0
+	for ci := range t.Chapters {
+		c := &t.Chapters[ci]
+		if index < n+len(c.Steps) {
+			at := index - n + 1
+			c.Steps = append(c.Steps[:at], append(append([]Step{}, steps...), c.Steps[at:]...)...)
+			return
+		}
+		n += len(c.Steps)
+	}
 }

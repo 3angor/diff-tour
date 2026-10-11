@@ -29,10 +29,14 @@ type Viewer struct {
 	width     int
 	height    int
 	message   string
+	asker     *Asker
+	ask       askState
 }
 
-func NewViewer(ctx render.Ctx) *Viewer {
-	return &Viewer{ctx: ctx, steps: ctx.Tour.Steps()}
+// NewViewer plays a tour. With an asker, the reader can ask questions with `?`.
+func NewViewer(ctx render.Ctx, asker *Asker) *Viewer {
+	ctx.CanAsk = asker != nil
+	return &Viewer{ctx: ctx, steps: ctx.Tour.Steps(), asker: asker}
 }
 
 func (v *Viewer) Init() tea.Cmd { return nil }
@@ -45,6 +49,14 @@ func (v *Viewer) goTo(i int) {
 }
 
 func (v *Viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg.(type) {
+	case answerProgressMsg, answerDoneMsg, answerTickMsg:
+		return v.updateAsk(msg)
+	case tea.KeyPressMsg, tea.PasteMsg:
+		if v.ask.mode != askOff {
+			return v.updateAsk(msg)
+		}
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		v.width, v.height = msg.Width, msg.Height
@@ -68,6 +80,8 @@ func (v *Viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			v.scroll = max(v.scroll-1, 0)
 		case "o":
 			return v, v.openEditor()
+		case "?", "/":
+			v.openAsk()
 		case "q", "ctrl+c":
 			return v, tea.Quit
 		}
@@ -98,6 +112,12 @@ func (v *Viewer) View() tea.View {
 		return view
 	}
 	lines, maxScroll := render.Frame(v.ctx, v.steps, v.index, v.scroll, v.width, v.height, v.message)
+	if v.ask.mode != askOff {
+		// The panel covers the bottom of the step, above the progress bar
+		panel := v.askPanel(v.width)
+		keep := max(2, len(lines)-2-len(panel))
+		lines = append(append(lines[:keep:keep], panel...), lines[len(lines)-2:]...)
+	}
 	v.maxScroll = maxScroll
 	v.scroll = min(v.scroll, maxScroll)
 	view.SetContent(join(lines, false))
