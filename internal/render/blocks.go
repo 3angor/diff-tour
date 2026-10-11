@@ -78,7 +78,7 @@ func renderCode(ref *tour.CodeRef, width int, ctx Ctx) []text.Line {
 			numStyle, mark, code = "33", "▌ ", colored[n-1]
 		}
 		gutter := text.Line{{Text: fmt.Sprintf("%*d ", numW, n), Style: numStyle}, {Text: mark, Style: "33"}}
-		out = append(out, text.Fit(text.Concat(gutter, code), width, ""))
+		out = append(out, wrapCode(gutter, code, width, "")...)
 		// Notes attached to this line go right under it, pointing up at it
 		for _, m := range ref.Marks {
 			if m.Line != n {
@@ -163,7 +163,7 @@ func renderDiff(ref *tour.DiffRef, width int, ctx Ctx) []text.Line {
 				}
 				return text.Join(bg, s)
 			})
-			out = append(out, text.Fit(text.Concat(gutter, code), width, bg))
+			out = append(out, wrapCode(gutter, code, width, bg)...)
 		}
 	}
 	return out
@@ -576,4 +576,51 @@ func argmax(xs []int) int {
 		}
 	}
 	return best
+}
+
+// wrapCode lays out one line of code after its gutter. A line too long for the width continues on
+// the next lines under a ↪ mark instead of being cut off, so comments and long expressions stay readable.
+func wrapCode(gutter, code text.Line, width int, bg string) []text.Line {
+	room := width - gutter.Width()
+	if room < 12 || text.TrimRight(code).Width() <= room {
+		return []text.Line{text.Fit(text.Concat(gutter, code), width, bg)}
+	}
+	cont := text.Line{{Text: strings.Repeat(" ", gutter.Width()-2), Style: bg}, {Text: "↪ ", Style: text.Join(bg, "90")}}
+	var out []text.Line
+	rest := text.TrimRight(code)
+	for first := true; rest.Width() > 0; first = false {
+		g := cont
+		if first {
+			g = gutter
+		}
+		piece := cutRight(rest, breakAt(rest, room))
+		out = append(out, text.Fit(text.Concat(g, piece), width, bg))
+		rest = cutLeft(rest, piece.Width())
+	}
+	return out
+}
+
+// breakAt is how many columns of l go on one line of the given room: up to the last space that fits,
+// so words aren't split, unless that would leave the line less than half full.
+func breakAt(l text.Line, room int) int {
+	if l.Width() <= room {
+		return room
+	}
+	col, last := 0, 0
+	for _, s := range l {
+		for _, r := range s.Text {
+			w := text.RuneWidth(r)
+			if col+w > room {
+				if last >= room/2 {
+					return last
+				}
+				return room
+			}
+			col += w
+			if r == ' ' {
+				last = col
+			}
+		}
+	}
+	return room
 }

@@ -59,6 +59,8 @@ type FlowNode struct {
 	Note string `json:"note,omitempty"`
 	// The label of the arrow to the next node.
 	Next string `json:"next,omitempty"`
+	// Starts a separate flow (another request, a timer), so no arrow comes from the node before.
+	Start bool `json:"start,omitempty"`
 }
 
 // Timeline shows what happens over time on several lanes (requests, processes, the database), drawn by the tool.

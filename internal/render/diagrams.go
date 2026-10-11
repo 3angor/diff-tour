@@ -26,12 +26,13 @@ func kindStyle(kind string) (border, tag string) {
 }
 
 // renderFlow draws the nodes as boxes from top to bottom, joined by labeled arrows.
+// The kind of a node (changed, new) is written into the top border of its box.
 func renderFlow(f *tour.Flow, width int) []text.Line {
 	// All boxes share one width so the arrows line up
 	boxW := 0
 	for _, n := range f.Nodes {
 		_, tag := kindStyle(n.Kind)
-		boxW = max(boxW, plainWidth(n.Label)+text.Width(tag)+5)
+		boxW = max(boxW, plainWidth(n.Label)+4, text.Width(tag)+8)
 	}
 	boxW = min(boxW, max(16, width*6/10))
 	inner := boxW - 4
@@ -39,19 +40,32 @@ func renderFlow(f *tour.Flow, width int) []text.Line {
 
 	var out []text.Line
 	for i, n := range f.Nodes {
+		if i > 0 {
+			pad := strings.Repeat(" ", center)
+			if n.Start {
+				// A separate flow: a gap instead of an arrow
+				out = append(out, nil, text.Line{{Text: strings.Repeat("┄", boxW), Style: "90"}}, nil)
+			} else {
+				arrow := text.Line{{Text: pad + "│", Style: "90"}}
+				if next := f.Nodes[i-1].Next; next != "" {
+					arrow = text.Concat(arrow, text.Line{{Text: " "}}, text.Fit(text.ParseInline(next, "36"), max(4, width-center-2), ""))
+				}
+				out = append(out, arrow, text.Line{{Text: pad + "▼", Style: "90"}})
+			}
+		}
 		border, tag := kindStyle(n.Kind)
 		labelStyle := "1"
 		if n.Kind == "same" || n.Kind == "" {
 			labelStyle = ""
 		}
-		spans := text.ParseInline(n.Label, labelStyle)
-		if tag != "" {
-			spans = append(spans, text.Span{Text: " " + tag, Style: border})
-		}
-		label := text.Wrap(spans, inner)
+		label := text.Wrap(text.ParseInline(n.Label, labelStyle), inner)
 		note := text.Wrap(text.ParseInline(n.Note, "90"), max(8, width-boxW-2))
 
-		rows := []text.Line{{{Text: "┌" + strings.Repeat("─", boxW-2) + "┐", Style: border}}}
+		top := text.Line{{Text: "┌" + strings.Repeat("─", boxW-2) + "┐", Style: border}}
+		if tag != "" {
+			top = text.Line{{Text: "┌─ ", Style: border}, {Text: tag, Style: text.Join("1", border)}, {Text: " " + strings.Repeat("─", max(0, boxW-5-text.Width(tag))) + "┐", Style: border}}
+		}
+		rows := []text.Line{top}
 		for _, l := range label {
 			rows = append(rows, text.Concat(text.Line{{Text: "│ ", Style: border}}, text.Fit(l, inner, ""), text.Line{{Text: " │", Style: border}}))
 		}
@@ -65,15 +79,6 @@ func renderFlow(f *tour.Flow, width int) []text.Line {
 			}
 		}
 		out = append(out, rows...)
-
-		if i < len(f.Nodes)-1 {
-			pad := strings.Repeat(" ", center)
-			arrow := text.Line{{Text: pad + "│", Style: "90"}}
-			if n.Next != "" {
-				arrow = text.Concat(arrow, text.Line{{Text: " "}}, text.Fit(text.ParseInline(n.Next, "36"), max(4, width-center-2), ""))
-			}
-			out = append(out, arrow, text.Line{{Text: pad + "▼", Style: "90"}})
-		}
 	}
 	for i := range out {
 		out[i] = text.Fit(out[i], width, "")

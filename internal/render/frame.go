@@ -28,6 +28,15 @@ func stack(blocks []tour.Block, width int, ctx Ctx) []text.Line {
 	return out
 }
 
+// naturalWidth is how wide a block is when it has all the room it wants.
+func naturalWidth(b tour.Block, ctx Ctx) int {
+	w := 0
+	for _, l := range Block(b, 400, ctx) {
+		w = max(w, text.TrimRight(l).Width())
+	}
+	return w
+}
+
 func spread(left, right text.Line, width int) text.Line {
 	room := width - right.Width()
 	if room < 8 {
@@ -121,29 +130,21 @@ func Frame(ctx Ctx, steps []tour.FlatStep, index, scroll, cols, rows int, messag
 		hint = []text.Line{nil, {{Text: i18n.T("think"), Style: "2;33"}}}
 	}
 
-	// A timeline needs the full width to keep its lanes readable, so it is drawn under the columns
-	var blocks, wide []tour.Block
-	for _, b := range step.Blocks {
-		if b.Timeline != nil {
-			wide = append(wide, b)
-		} else {
-			blocks = append(blocks, b)
-		}
-	}
-
-	// Only the code block(s) at the very start (or, if none, the first code block) go on the left.
-	// Everything else goes on the right in its original order, so the flow of the explanation isn't broken
+	// Only the visual block(s) at the very start (or, if none, the first visual block) go on the left.
+	// Everything else goes on the right in its original order, so the flow of the explanation isn't broken.
+	// A timeline always needs the full width, so it never goes on the left
+	onLeft := func(b tour.Block) bool { return b.IsVisual() && b.Timeline == nil }
 	var visual, other []tour.Block
 	leading := 0
-	for leading < len(blocks) && blocks[leading].IsVisual() {
+	for leading < len(step.Blocks) && onLeft(step.Blocks[leading]) {
 		leading++
 	}
 	if leading > 0 {
-		visual, other = blocks[:leading], blocks[leading:]
+		visual, other = step.Blocks[:leading], step.Blocks[leading:]
 	} else {
 		taken := false
-		for _, b := range blocks {
-			if !taken && b.IsVisual() {
+		for _, b := range step.Blocks {
+			if !taken && onLeft(b) {
 				visual, taken = append(visual, b), true
 			} else {
 				other = append(other, b)
@@ -152,40 +153,49 @@ func Frame(ctx Ctx, steps []tour.FlatStep, index, scroll, cols, rows int, messag
 	}
 
 	body := append(append([]text.Line{}, title...), nil)
+	columns := false
 	if cols >= sideBySideMinCols && len(visual) > 0 && len(other) > 0 {
 		// Size the left side to the code's actual width so code isn't cut off (within 45-65% of the total)
 		natural := 0
-		for _, l := range stack(visual, 400, ctx) {
-			natural = max(natural, text.TrimRight(l).Width())
+		for _, b := range visual {
+			natural = max(natural, naturalWidth(b, ctx))
 		}
 		leftW := max(inner*45/100, min(natural, inner*65/100))
 		rightW := inner - leftW - 3
-		left := stack(visual, leftW, ctx)
-		right := stack(other, rightW, ctx)
-		if len(wide) == 0 {
-			right = append(right, hint...)
-		}
-		for i := range max(len(left), len(right)) {
-			var l, r text.Line
-			if i < len(left) {
-				l = left[i]
+		// The right column holds the blocks up to the first one too wide for it (a timeline, wide code or table).
+		// That block and everything after it go under the columns at full width, still in order
+		cut := len(other)
+		for i, b := range other {
+			if b.Timeline != nil || ((b.IsVisual() || b.Table != nil) && naturalWidth(b, ctx) > rightW) {
+				cut = i
+				break
 			}
-			if i < len(right) {
-				r = right[i]
-			}
-			body = append(body, text.Concat(text.Fit(l, leftW, ""), text.Line{{Text: " │ ", Style: "90"}}, text.Fit(r, rightW, "")))
 		}
-	} else {
-		body = append(body, stack(blocks, inner, ctx)...)
-		if len(wide) == 0 {
-			body = append(body, hint...)
+		if cut > 0 {
+			columns = true
+			rest := other[cut:]
+			left := stack(visual, leftW, ctx)
+			right := stack(other[:cut], rightW, ctx)
+			if len(rest) == 0 {
+				right = append(right, hint...)
+			}
+			for i := range max(len(left), len(right)) {
+				var l, r text.Line
+				if i < len(left) {
+					l = left[i]
+				}
+				if i < len(right) {
+					r = right[i]
+				}
+				body = append(body, text.Concat(text.Fit(l, leftW, ""), text.Line{{Text: " │ ", Style: "90"}}, text.Fit(r, rightW, "")))
+			}
+			if len(rest) > 0 {
+				body = append(append(append(body, nil), stack(rest, inner, ctx)...), hint...)
+			}
 		}
 	}
-	if len(wide) > 0 {
-		if len(blocks) > 0 {
-			body = append(body, nil)
-		}
-		body = append(append(body, stack(wide, inner, ctx)...), hint...)
+	if !columns {
+		body = append(append(body, stack(step.Blocks, inner, ctx)...), hint...)
 	}
 
 	bodyH := max(1, rows-len(header)-2)
