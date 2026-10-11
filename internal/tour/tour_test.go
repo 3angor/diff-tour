@@ -2,6 +2,7 @@ package tour
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -46,5 +47,21 @@ func TestInsertAfter(t *testing.T) {
 	}
 	if len(tr.Chapters[0].Steps) != 3 {
 		t.Errorf("x should join the first chapter")
+	}
+}
+
+// Asks on a question step and on the step before it are dropped, even across a chapter boundary.
+func TestDropRevealingAsks(t *testing.T) {
+	tr := parse(t, `{"chapters": [
+		{"title": "a", "steps": [{"title": "1", "asks": ["keep"], "blocks": []}, {"title": "2", "asks": ["drop"], "blocks": []}]},
+		{"title": "b", "steps": [{"title": "3", "question": true, "asks": ["drop"], "blocks": []}, {"title": "4", "asks": ["keep"], "blocks": []}]}
+	]}`)
+	tr.DropRevealingAsks()
+	var got []int
+	for _, s := range tr.Steps() {
+		got = append(got, len(s.Asks))
+	}
+	if want := []int{1, 0, 0, 1}; !slices.Equal(got, want) {
+		t.Errorf("asks per step = %v, want %v", got, want)
 	}
 }

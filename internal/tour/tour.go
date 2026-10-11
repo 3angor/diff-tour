@@ -208,6 +208,25 @@ func (t *Tour) Steps() []FlatStep {
 	return out
 }
 
+// DropRevealingAsks removes the suggested questions on a question step and on the step just before it,
+// since their wording would give away the answer the reader is asked to think about.
+func (t *Tour) DropRevealingAsks() {
+	var steps []*Step
+	for i := range t.Chapters {
+		for j := range t.Chapters[i].Steps {
+			steps = append(steps, &t.Chapters[i].Steps[j])
+		}
+	}
+	for i, s := range steps {
+		if s.Question {
+			s.Asks = nil
+			if i > 0 {
+				steps[i-1].Asks = nil
+			}
+		}
+	}
+}
+
 func Load(path string) (*Tour, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {

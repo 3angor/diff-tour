@@ -119,6 +119,7 @@ func parse(req Request, text string) (*tour.Tour, []string) {
 	if err := t.Validate(); err != nil {
 		return &t, []string{err.Error()}
 	}
+	t.DropRevealingAsks()
 	return &t, render.Check(render.Ctx{Tour: &t, Repo: req.Repo})
 }
 
