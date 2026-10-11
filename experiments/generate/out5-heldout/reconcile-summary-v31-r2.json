@@ -1,0 +1,544 @@
+{
+  "version": 1,
+  "title": "照合バッチの注文ごとの失敗処理と、回の重なり止めを読む",
+  "base": "main",
+  "head": "feature/reconcile-summary",
+  "chapters": [
+    {
+      "title": "対象",
+      "steps": [
+        {
+          "title": "2 つのコミットで照合バッチを変えている",
+          "blocks": [
+            {
+              "target": true
+            },
+            {
+              "quote": "Keep reconciling the remaining orders when one of them fails\nA single findCharge timeout or a failed save used to abort the whole run, so every order after it waited another five minutes. ... an order that fails is left in PENDING_PAYMENT untouched and is picked up again on the next run.\nDo not start a reconcile run while the previous one is still going"
+            },
+            {
+              "p": "1 つ目のコミットで注文ごとに失敗を閉じ込め、2 つ目で回の重なりを止めている。2 つ目は 1 つ目の副作用（1 回の実行が長くなる）への手当てになっている。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "何のための変更か",
+      "steps": [
+        {
+          "title": "困っていたのは、関係のない注文を持つ利用者",
+          "blocks": [
+            {
+              "p": "変更前は、ループの中で 1 件でも例外が出ると回全体が止まり、server.ts の `.catch` がログを 1 行出すだけだった。止まった注文より後ろの注文は、5 分後の次の回まで確定しない。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/server.ts",
+                "at": "base",
+                "lines": [
+                  23,
+                  25
+                ],
+                "note": "変更前"
+              }
+            },
+            {
+              "p": "待たされた利用者は、checkout で 503 と「しばらくしてから注文履歴をご確認ください」を受け取った人たちになる。その注文が、自分と関係のない 1 件の失敗のせいで決済中のまま残っていた。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/handlers/checkout.ts",
+                "lines": [
+                  24,
+                  31
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "仮説: 「1 件の失敗をその 1 件の中に閉じ込める。閉じ込めた注文は、分からないまま（PENDING_PAYMENT）残す」。お金が絡むので、ここで一番気にするのは、閉じ込めた注文を誤って確定させていないかになる。以降の章でこれを確かめる。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "全体の地図",
+      "steps": [
+        {
+          "title": "処理の流れと、どこに時間を使うか",
+          "blocks": [
+            {
+              "pre": "setInterval（5 分ごと）              server.ts\n  └ reconcile()   ← 新: 実行中なら null\n      └ reconcilePendingPayments()\n          ├ findByStatusUpdatedBefore … SQLite\n          │   （ORDER BY updated_at、変更なし）\n          └ 注文ごと  ← 新: try/catch で閉じ込め\n              ├ findCharge … 決済サービス\n              │   （GET、10 秒で打ち切り）\n              └ save … SQLite の UPSERT 1 文\n  └ summary を受けてログ  ← 新"
+            },
+            {
+              "table": {
+                "head": [
+                  "場所",
+                  "使う時間",
+                  "理由"
+                ],
+                "rows": [
+                  [
+                    "catch の中身",
+                    "厚く",
+                    "誤って PAYMENT_FAILED にすると二重課金につながる"
+                  ],
+                  [
+                    "createReconcileRunner",
+                    "厚く",
+                    "同時実行。割り込みがないかを確かめる"
+                  ],
+                  [
+                    "失敗し続ける注文の行方",
+                    "厚く",
+                    "差分の外（並び順、24 時間の保持）で決まる"
+                  ],
+                  [
+                    "server.ts のログ",
+                    "短く",
+                    "要約を出すだけ。戻せる"
+                  ],
+                  [
+                    "テストの import や追随",
+                    "短く",
+                    "機械的な変更"
+                  ]
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "仕組み",
+      "steps": [
+        {
+          "title": "findCharge がタイムアウトした注文を、どうするべきか",
+          "question": true,
+          "blocks": [
+            {
+              "p": "照合バッチで、ある注文の `findCharge` が `PaymentTimeoutError` を投げたとする。もし catch の中でこの注文を `PAYMENT_FAILED` にして保存したら、利用者に何が起こりうるか。"
+            },
+            {
+              "p": "決済中のまま何時間も残すより、失敗にして「もう一度お試しください」と言うほうが親切に見える。それでもそうしない理由は何か。"
+            }
+          ]
+        },
+        {
+          "title": "答え: PAYMENT_FAILED は「課金されていない」という約束",
+          "blocks": [
+            {
+              "p": "このコードベースでは、PAYMENT_FAILED は「課金の記録がないので、もう一度確定しても二重課金にならない」という意味になっている。この意味は照合バッチのコメントに書いてある。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "lines": [
+                  41,
+                  44
+                ]
+              }
+            },
+            {
+              "p": "checkout は PAYMENT_FAILED の注文の再確定を受け付ける（33 行）。タイムアウトや障害のときは「課金されたか分からない」ので、PENDING_PAYMENT のまま照合バッチに任せる、と書いてある（56-57 行）。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/orders/orderService.ts",
+                "lines": [
+                  56,
+                  57
+                ],
+                "show": [
+                  31,
+                  58
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "タイムアウトで PAYMENT_FAILED にすると、実際には課金済みの注文が「失敗」と表示され、再確定ができるようになる。同じ冪等キーで課金し直すので、24 時間以内なら決済サービスが 1 回分として扱う（gateway.ts 6 行）。24 時間を過ぎていれば、二重課金になりうる。",
+              "basis": "inferred"
+            },
+            {
+              "p": "分からないときは確定させない。照合バッチの catch がこの向きに倒れているかを、次で見る。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "catch は何も書かない。save の失敗も同じ",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "lines": [
+                  45,
+                  50
+                ],
+                "show": [
+                  34,
+                  53
+                ]
+              }
+            },
+            {
+              "p": "catch は `summary.skipped` に積むだけで、注文の状態を書かない。findCharge で例外が出れば、39・43 行の書き換えに届く前に catch へ飛ぶ。",
+              "basis": "fact"
+            },
+            {
+              "p": "save で例外が出たときは、メモリ上の `order.status` はもう書き換わっている。ただしこのオブジェクトはそのまま捨てられる。次の回は `findByStatusUpdatedBefore` で DB から読み直すので、書き換えが漏れることはない。",
+              "basis": "fact"
+            },
+            {
+              "p": "save は UPSERT 1 文なので、「半分だけ書けた」状態にはならないはず。コメントの「書き換え前のまま（または保存されていない）」は正しい。",
+              "basis": "inferred"
+            },
+            {
+              "code": {
+                "file": "src/orders/sqliteOrderRepository.ts",
+                "lines": [
+                  39,
+                  52
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "`push` が `save` のあとにあるので、`paid` と `failed` には保存できた注文だけが入る。要約が DB の実際と食い違わない順番になっていて、良い。",
+              "basis": "fact"
+            },
+            {
+              "p": "失敗を 1 件の中に閉じ込め（隔離）、閉じ込めた注文は安全側（確定させない側）に倒す。この 2 つが揃っているので、この try/catch は良い形になっている。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "2 つの tick が同時に running を見たら",
+          "question": true,
+          "blocks": [
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "lines": [
+                  60,
+                  69
+                ]
+              }
+            },
+            {
+              "p": "setInterval の tick が、前の回の実行中に来たとする。2 つの呼び出しがどちらも `running === false` を見て、両方とも `run()` に進むことはあるか。"
+            },
+            {
+              "p": "また、`run()` が永遠に返ってこなかったら、このロックはどうなるか。"
+            }
+          ]
+        },
+        {
+          "title": "答え: 確かめてから立てるまでの間に await がない",
+          "blocks": [
+            {
+              "p": "62 行の確認と 63 行の `running = true` の間に `await` がない。JavaScript は 1 本の流れで動くので、この 2 行の間に別の呼び出しは入れない。確かめてから書くまでの間（check-then-act の隙間）は、プロセスの中では生まれない。",
+              "basis": "inferred"
+            },
+            {
+              "p": "`finally` で戻すので、run が例外で終わっても次の回は動ける。そのことはテストが確かめている。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "test/reconcileRunner.test.ts",
+                "lines": [
+                  36,
+                  46
+                ]
+              }
+            },
+            {
+              "p": "返ってこない場合については、外への呼び出しは fetch だけで、10 秒で打ち切る設定になっている。SQLite は同期で呼んでいる。どの await にも終わりがあるので、ロックが永遠に立ったままになることはない。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/payment/httpGateway.ts",
+                "lines": [
+                  61,
+                  61
+                ],
+                "show": [
+                  52,
+                  62
+                ],
+                "note": "変更なし。app.ts 12 行で timeoutMs: 10_000"
+              }
+            },
+            {
+              "p": "このロックは宣言しただけで効くものではない。有効にしているのは server.ts で runner を 1 つだけ作り、それを tick から呼んでいる場所になる。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/server.ts",
+                "lines": [
+                  23,
+                  27
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "肝心の行を壊したら、どのテストが落ちるか",
+          "blocks": [
+            {
+              "table": {
+                "head": [
+                  "壊し方",
+                  "落ちるテスト"
+                ],
+                "rows": [
+                  [
+                    "catch の中で PAYMENT_FAILED を保存する",
+                    "問い合わせ失敗のテスト（58-59 行）"
+                  ],
+                  [
+                    "try/catch を外す",
+                    "失敗系の 2 本（例外が漏れる）"
+                  ],
+                  [
+                    "`running = true` を消す",
+                    "runner の 1 本目（calls が 2）"
+                  ],
+                  [
+                    "`finally` をやめる",
+                    "runner の 3 本目"
+                  ],
+                  [
+                    "`push` を `save` の前に動かす",
+                    "**どれも落ちない**"
+                  ]
+                ]
+              }
+            },
+            {
+              "code": {
+                "file": "test/reconcilePendingPayments.test.ts",
+                "lines": [
+                  73,
+                  76
+                ],
+                "show": [
+                  63,
+                  82
+                ]
+              }
+            },
+            {
+              "p": "保存に失敗したテストは `skipped` と `failed` を見ているが、`first.paid` は見ていない。`push` を前に動かすと o1 が paid と skipped の両方に入る。それでも、このテストは通ってしまう。",
+              "basis": "inferred"
+            },
+            {
+              "p": "それ以外は、内部の呼び出し順ではなく、DB に残った状態と要約という結果を確かめている。mock も findCharge と save を差し替えているだけで、本物と同じ形で例外を投げる。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "シニアならここで手が止まる",
+      "steps": [
+        {
+          "title": "いつも失敗する注文が 1 件あったら",
+          "question": true,
+          "blocks": [
+            {
+              "p": "決済サービスが、ある 1 件の注文の問い合わせにだけ毎回 500 を返すとする。たとえば、その注文のデータが向こうで壊れている場合である。"
+            },
+            {
+              "p": "この注文は、これから毎回の回でどう扱われるか。それが 30 時間続いたら、何が起こりうるか。"
+            }
+          ]
+        },
+        {
+          "title": "答え: 先頭に居座り、上限なく再試行され続ける",
+          "blocks": [
+            {
+              "p": "失敗した注文は save されないので、updated_at は古いまま変わらない。対象は `ORDER BY updated_at` で取るので、この注文は毎回の回で一番先に問い合わせられる。回数の上限も、経過時間の確認もない。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/orders/sqliteOrderRepository.ts",
+                "lines": [
+                  56,
+                  56
+                ],
+                "show": [
+                  54,
+                  59
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "他の注文はもう止まらない。ここは変更前より確かに良くなった。変更前は、この 1 件のせいで後ろの注文がすべて止まり続けていた。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/payment/gateway.ts",
+                "lines": [
+                  6,
+                  7
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "気になるのは 24 時間という保持期間になる。findCharge の冪等キーでの検索が 24 時間を過ぎると見つからなくなる仕様なら、30 時間後に 500 が直った時点で 404 → null → PAYMENT_FAILED になる。課金済みの注文が「失敗」と表示され、再確定で二重課金になりうる。検索の保持期間は外部の仕様で、このリポジトリからは確かめられない。",
+              "basis": "inferred"
+            },
+            {
+              "p": "重さは「問い」とする。決済サービスの仕様を確かめ、長く残った注文は自動で確定させず、人が見る扱いにするかを決めたい。少なくとも、ログ（server.ts 33 行）に updatedAt を出せば、「何時間残っているか」に気付ける。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "障害中に問い合わせが増える。ここは気にしなくてよい",
+          "blocks": [
+            {
+              "p": "決済サービスが落ちている間、変更前は 1 件目で回が止まり、5 分に 1 回しか問い合わせなかった。変更後は、残っている注文の全件に問い合わせる。失敗のときに負荷を外へ移していないかが気になる。",
+              "basis": "fact"
+            },
+            {
+              "p": "ただ、ループは 1 件ずつ await するので、同時に飛ぶ要求は 1 つ以下になる。回の重なりはロックが止める。タイムアウトが続けば 10 秒に 1 件ほどで、checkout の通常の流量と比べて小さい。止めるほどのことではない。",
+              "basis": "inferred"
+            },
+            {
+              "p": "「3 件続けて失敗したら回を打ち切る」案も考えられる。だが、値で追うと防げない。いつも失敗する注文が 3 件あると、前の手順のとおり、それらは毎回先頭に並ぶ。すると毎回その 3 件で打ち切られ、後ろの注文が止まる元の問題が戻ってしまう。",
+              "basis": "inferred"
+            },
+            {
+              "p": "直し方を出す前に、その案がほかの失敗（ここでは先頭に居座る注文）と組み合わさっても防げるかを値で追う。この案は防げないので、入れないのが正しい。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "ロックはプロセスの中でしか効かない",
+          "blocks": [
+            {
+              "p": "`running` はクロージャの中の変数にすぎない。デプロイの入れ替え中に新旧の 2 プロセスが同じ shop.db を見ていれば、2 つの回が同時に動ける。",
+              "basis": "fact"
+            },
+            {
+              "p": "そうなっても、両方が同じ注文に GET を送り、同じ結果を書くだけのことが多い。まれに、片方が古い一覧のまま PAYMENT_FAILED を書き、再確定の途中の PENDING_PAYMENT を上書きする隙間がある。その場合も 24 時間以内なら、冪等キーで二重課金は防がれる。",
+              "basis": "inferred"
+            },
+            {
+              "p": "本番が 1 プロセスかどうかは、リポジトリからは分からない。重さは「問い」とする。",
+              "basis": "fact"
+            },
+            {
+              "snippet": {
+                "label": "このリポジトリにないコード：状態を条件にして書き込む例",
+                "lang": "sql",
+                "text": "UPDATE orders\n   SET status = ?, charge_id = ?, updated_at = ?\n WHERE id = ? AND status = 'PENDING_PAYMENT';\n-- 変更した行数が 0 なら、別の誰かが先に確定させた"
+              }
+            },
+            {
+              "p": "選ばなかった設計として比べる。条件付きの UPDATE なら、プロセスの数に関係なく「決済中のものだけを確定する」約束を DB が守る。代わりに、全列を上書きする `save` の外に、新しいリポジトリのメソッドが要る。今回の目的（1 プロセスでの重なり止め）には、メモリ上の旗で見合っている。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "短く挙げるもの",
+          "blocks": [
+            {
+              "list": [
+                "Nit: 「skipped」が、エラーで残した注文（server.ts 36 行）と、飛ばした回（29 行）の 2 つの意味で使われている。注文のほうは `leftPending` などにすると、ログが読み分けやすい",
+                "Nit: 0 件でも 5 分ごとに `0 paid, 0 failed, 0 skipped` が出る。1 日 288 行になる",
+                "気にしなくてよい: catch はバグ（TypeError など）も受けて skipped にする。ただ、注文 ID とともに毎回 error で出るので、黙って隠れはしない",
+                "気にしなくてよい: API キーの設定ミス（401）は、findCharge で PaymentUnavailableError になり、全件が skipped になる。ログは N 行に増えるが、状態を誤って書くことはない",
+                "確かめた: ログに出るエラーのメッセージは status だけで、API キーはヘッダにしかない（cause の中身は fetch しだい）",
+                "確かめた: テストで使う `PaymentTimeoutError`・`PaymentUnavailableError`・`Order` は gateway.ts と order.ts に実在する"
+              ]
+            },
+            {
+              "p": "頼まれていない抽象は足していない。`createReconcileRunner` も、要約を返す形に絞った小さな関数になっている。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "まとめ",
+      "steps": [
+        {
+          "title": "コードベースは良くなったか、どうコメントするか",
+          "blocks": [
+            {
+              "p": "良くなった。1 件の失敗で全件が止まる問題が消え、閉じ込めた注文は確定させない側に倒れている。重なりも、割り込みのない形で止めている。止めるべき問題は見つからなかった。",
+              "basis": "inferred"
+            },
+            {
+              "table": {
+                "head": [
+                  "札",
+                  "コメント"
+                ],
+                "rows": [
+                  [
+                    "良い点",
+                    "catch が状態を書かず、`push` を save のあとに置いている。「分からないものは確定させない」約束を守ったまま、失敗を 1 件に閉じ込めている"
+                  ],
+                  [
+                    "提案",
+                    "保存失敗のテストに `assert.deepEqual(first.paid, [])` を足す。いまは push を save の前に動かしても落ちない"
+                  ],
+                  [
+                    "問い",
+                    "findCharge の検索は 24 時間を過ぎても使えるか。長く残った注文に気付けるよう、ログに updatedAt を出すか"
+                  ],
+                  [
+                    "Nit",
+                    "注文の `skipped` と、回の skipped で、言葉が重なっている"
+                  ]
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "追体験したこと",
+          "blocks": [
+            {
+              "list": [
+                "行を読む前に、「誰が困らなくなるか」と「お金の約束を壊していないか」を仮説として持った",
+                "catch の正しさを、差分の外（orderService のコメント、gateway の例外の意味）で決めた",
+                "「確かめてから書く」の間に await がないことを、行で確かめた",
+                "失敗し続ける注文を値で追い、並び順と 24 時間という差分の外の事情を見つけた",
+                "思い付いた直し方（連続失敗で打ち切る）を値で追い、防げないので入れないと決めた",
+                "肝心の行を 1 つずつ壊し、テストが捕まえない 1 か所を見つけた"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

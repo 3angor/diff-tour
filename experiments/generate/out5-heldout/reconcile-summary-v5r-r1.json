@@ -1,0 +1,575 @@
+{
+  "version": 1,
+  "title": "照合バッチを「1 件ずつ」にした変更を、シニアの目で読む",
+  "base": "main",
+  "head": "feature/reconcile-summary",
+  "chapters": [
+    {
+      "title": "対象",
+      "steps": [
+        {
+          "title": "2 つのコミットで、照合バッチの失敗の扱いと実行の重なりを変えている",
+          "blocks": [
+            {
+              "target": true
+            },
+            {
+              "quote": "Keep reconciling the remaining orders when one of them fails\nA single findCharge timeout or a failed save used to abort the whole run, so every order after it waited another five minutes. Handle each order on its own: an order that fails is left in PENDING_PAYMENT untouched and is picked up again on the next run.\nDo not start a reconcile run while the previous one is still going\nWhen the payment service is slow a run can take longer than the five-minute interval, and the next tick would start querying the same orders again. Skip that tick instead and log it."
+            },
+            {
+              "p": "コミットメッセージは AI と一緒に書かれている。ここに書かれた主張（「1 件の失敗で全体が止まっていた」「重なると同じ注文に問い合わせ直す」）は、鵜呑みにせず、このツアーの中でコードを見て 1 つずつ確かめる。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "何のための変更か",
+      "steps": [
+        {
+          "title": "「決済中」の注文は、誰が決着を付けるのか",
+          "blocks": [
+            {
+              "p": "行を読む前に、この変更で誰が何に困らなくなるのかを言葉にしておく。まず、照合バッチが扱う「決済中」（`PENDING_PAYMENT`）の注文がどこで生まれるかを見る。"
+            },
+            {
+              "code": {
+                "file": "src/orders/orderService.ts",
+                "lines": [
+                  51,
+                  58
+                ],
+                "show": [
+                  37,
+                  59
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "注文確定では、課金の前に `PENDING_PAYMENT` を保存する。カードが拒否されたときだけ `PAYMENT_FAILED` にする。決済サービスの障害（`PaymentUnavailableError`）やタイムアウトのときは状態を書き換えないので、注文は決済中のまま残る。そこから先の決着は照合バッチに任せる、とコメントに書いてある。",
+              "basis": "fact"
+            },
+            {
+              "p": "つまり、決済中のまま残った注文の利用者は、照合バッチが回るまで「決済の結果を確認しています」という状態で待たされる（`src/handlers/checkout.ts:24-31`）。照合バッチが止まれば、その待ち時間がそのまま延びる。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "変更前：先頭で 1 件失敗すると、後ろの全員が待たされる",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "at": "base",
+                "lines": [
+                  22,
+                  32
+                ],
+                "note": "変更前"
+              }
+            },
+            {
+              "code": {
+                "file": "src/orders/sqliteOrderRepository.ts",
+                "lines": [
+                  56,
+                  56
+                ],
+                "show": [
+                  54,
+                  59
+                ],
+                "note": "変更なし。本番で使われる実装（src/app.ts:8）"
+              }
+            },
+            {
+              "p": "変更前のループには catch がない。`findCharge` か `save` のどちらかが投げると、その回はそこで終わる。本番の一覧は `ORDER BY updated_at` で古い順に並ぶので、失敗した注文は次の回も先頭に来る。",
+              "basis": "fact"
+            },
+            {
+              "rows": {
+                "label": "決済中の注文が 3 件ある回（説明用に作った値）",
+                "head": [
+                  "注文",
+                  "並び",
+                  "決済サービスの応答",
+                  "変更前",
+                  "変更後"
+                ],
+                "data": [
+                  [
+                    "o1",
+                    "1 番目",
+                    "タイムアウト",
+                    "回が止まる",
+                    "決済中のまま、次の回へ"
+                  ],
+                  [
+                    "o2",
+                    "2 番目",
+                    "記録あり",
+                    "触られない",
+                    "PAID"
+                  ],
+                  [
+                    "o3",
+                    "3 番目",
+                    "記録なし",
+                    "触られない",
+                    "PAYMENT_FAILED"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "o1 が毎回失敗するなら、o2 と o3 はいつまでも決着しない。コミットメッセージには「5 分待つ」と書いてあるが、失敗が続けば 5 分では済まない。",
+              "basis": "inferred"
+            },
+            {
+              "p": "この章を 1 文で言うと、この変更は「決済中のまま残った注文の決着を、1 件の失敗で止めない」という約束を足している。これが最初の仮説で、以降の章でこれを確かめる。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "全体の地図",
+      "steps": [
+        {
+          "title": "処理の流れと、時間を使う場所",
+          "blocks": [
+            {
+              "pre": "[注文確定] POST /orders/:id/checkout\n  PENDING_PAYMENT を保存 → charge\n  障害・タイムアウト → PENDING のまま残す\n            │ 10 分たっても残っている注文\n            ▼\n[server.ts] setInterval 5 分ごと\n  reconcile()            ← createReconcileRunner（新）\n    前の回が実行中なら null → warn ログ（新）\n    reconcilePendingPayments\n      findByStatusUpdatedBefore（古い順）\n      注文ごとに try（新）\n        findCharge → PAID / PAYMENT_FAILED → save\n        失敗 → skipped に積む（新）\n      summary を返す（新）\n  summary を server がログに出す（新）"
+            },
+            {
+              "p": "差分は 4 ファイル。頭を使って読むのは、ジョブの try/catch（約 15 行）と runner（約 12 行）の 2 か所だけになる。",
+              "basis": "fact"
+            },
+            {
+              "list": [
+                "時間を使う 1：注文ごとの try/catch。catch のあと、注文と DB はどの状態にいるか。catch は何を受けるか",
+                "時間を使う 2：runner。回が重なると、本当は何が起きるのか",
+                "短く済ませる：`ReconcileSummary` 型、server のログの組み立て、テストの準備（helper の `pendingOrders`）。これらは形どおりの書き方なので、ずれがないかだけを見る"
+              ]
+            },
+            {
+              "p": "見に行く差分の外の場所は、`orderService.ts`（誰が PENDING を書くか）、`sqliteOrderRepository.ts`（save が何をするか）、`httpGateway.ts`（findCharge が何を投げるか）、`package.json`（プロセスがいくつ動くか）の 4 つ。差分の行が正しいかは、ここを見ないと決まらない。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "仕組み",
+      "steps": [
+        {
+          "title": "catch のあと、注文はどの状態にいるか",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "lines": [
+                  36,
+                  50
+                ],
+                "show": [
+                  34,
+                  53
+                ]
+              }
+            },
+            {
+              "p": "try の中には、外への問い合わせ（37 行目）、メモリ上の書き換え（39〜43 行目）、保存（45 行目）がある。どこで投げても、行き先は 47 行目の catch になる。",
+              "basis": "fact"
+            },
+            {
+              "p": "「次の回にやり直せる」というコメントが本当かは、`save` の中身を見ないと決まらない。そこで save に飛ぶ。"
+            },
+            {
+              "code": {
+                "file": "src/orders/sqliteOrderRepository.ts",
+                "lines": [
+                  40,
+                  51
+                ],
+                "show": [
+                  39,
+                  52
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "save は 1 文の upsert なので、半分だけ書かれることはない。`findCharge` は読むだけの問い合わせなので、何回呼んでも決済サービス側の状態は変わらない。失敗したとき、DB の注文は `PENDING_PAYMENT` のままで、次の回の一覧に必ずもう一度入る。",
+              "basis": "fact"
+            },
+            {
+              "p": "39〜43 行目で書き換えた `order` は、ループの中だけで使われるオブジェクトで、保存に失敗すれば捨てられる。書き換え途中の状態が外に漏れる経路はない。",
+              "basis": "fact"
+            },
+            {
+              "p": "注文ごとに失敗を閉じ込めても安全なのは、「やり直しても結果が変わらない操作」だけで組み立てられているから。良い設計で、コメントもそれを正しく言っている。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "回が重なったら、何が起きるか",
+          "question": true,
+          "blocks": [
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "lines": [
+                  59,
+                  70
+                ],
+                "show": [
+                  55,
+                  70
+                ]
+              }
+            },
+            {
+              "p": "コミットメッセージとコメントによれば、runner は「重なると同じ注文に二重に問い合わせてしまう」のを防ぐためのものだ。読むだけの問い合わせが 2 回になり、同じ答えを 2 回書くだけなら、害はほとんどなさそうに見える。"
+            },
+            {
+              "p": "では、runner がなくて、遅い回 A と次の回 B が重なったとき、無駄な問い合わせのほかに何か壊れることはあるだろうか？ 決済中の注文 o41 と、その注文の利用者の操作を、時刻の順に追って考えてみよう。"
+            }
+          ]
+        },
+        {
+          "title": "答え：重なると、確定し直して PAID になった注文を上書きしうる",
+          "blocks": [
+            {
+              "pre": "分:秒 回 A               回 B（重なった回）    o41\n0:00  一覧を取る                                PENDING\n5:00                      一覧を取る(o41 も)    PENDING\n5:30  記録なし→保存                             PAYMENT_FAILED\n5:31                      o41 を問い合わせ\n                          （まだ記録なし）\n5:32  利用者が確定し直す → 課金成功 → 保存       PAID\n5:40                      null → FAILED を保存  PAYMENT_FAILED"
+            },
+            {
+              "p": "`PAYMENT_FAILED` の注文は、もう一度確定できる（`src/orders/orderService.ts:33`）。回 A が FAILED と書いた直後に利用者が確定し直すと、注文は PAID になる。そのあと、回 B が古い答え（null）で FAILED を書き、`chargeId` も空で上書きする。課金されているのに、画面には失敗と出る。",
+              "basis": "inferred"
+            },
+            {
+              "p": "窓は狭い。回 B の問い合わせが確定し直しより後なら、同じ冪等キー（`src/orders/order.ts:17-19`）で記録が見つかり、PAID を書くので害はない。害になるのは、確定し直しが、回 B の問い合わせと保存のあいだ（応答待ちは最長 10 秒、`src/app.ts:12`）に収まるときだけ。その窓は、決済サービスが遅いとき、つまり回が重なりやすいときほど広がる。",
+              "basis": "inferred"
+            },
+            {
+              "p": "こうなるのは、save が状態を確かめずに上書きする upsert（`sqliteOrderRepository.ts:44`）だから。runner が回を直列にしていることが、この上書きを防いでいる。コメントに書かれた理由よりも、守っているものは大きい。",
+              "basis": "inferred"
+            },
+            {
+              "p": "runner だけで十分と言える根拠は 3 つある。`running = true` は await より前に同期で立つ（63 行目）。プロセスは `node src/server.ts` の 1 つだけ（`package.json:6`）で、cluster の記述はない。決済中の注文は確定し直せないので、1 つの回の中では、ほかに書く者がいない（`orderService.ts:33`）。",
+              "basis": "fact"
+            },
+            {
+              "p": "選ばなかった設計として、save を「`WHERE status = 'PENDING_PAYMENT'` のときだけ更新する」にする方法がある。こちらなら、プロセスが何台に増えても守れる。その代わり、リポジトリのインターフェースが変わる。いまはプロセスが 1 つなので、runner で足りる。台数を増やすときに、この判断を見直す。",
+              "basis": "opinion"
+            },
+            {
+              "p": "コメントには「二重に問い合わせる」ではなく、「上書きを防ぐ」と本当の理由を書いておきたい（提案）。理由が分からないと、次の人が「無駄が少し出るだけ」と考えて runner を外しかねない。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "肝心の行を壊したら、どのテストが落ちるか",
+          "blocks": [
+            {
+              "p": "AI が書いた変更では、実装より先にテストの差分を疑う。まず、既存のテストの期待値が変わっていないかを見る。"
+            },
+            {
+              "diff": {
+                "file": "test/reconcilePendingPayments.test.ts",
+                "hunks": [
+                  1
+                ]
+              }
+            },
+            {
+              "p": "既存のテストは assert を 1 行足しただけで、何も緩めていない。try/catch を外すと、新しく足された 2 つのテスト（問い合わせの失敗、保存の失敗）が落ちる。runner の旗を戻す `finally` を外すと、「例外で終わっても次の回を実行できる」のテスト（`test/reconcileRunner.test.ts:36-46`）が落ちる。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "test/reconcilePendingPayments.test.ts",
+                "lines": [
+                  74,
+                  75
+                ],
+                "show": [
+                  73,
+                  77
+                ]
+              }
+            },
+            {
+              "p": "小さな穴が 1 つある。ジョブの 46 行目の振り分けを save の前に動かして、保存に失敗した o1 が `paid` と `skipped` の両方に入るようにしても、このテストは通る。`first.paid` が空であることを見ていないからだ（Nit）。",
+              "basis": "fact"
+            },
+            {
+              "p": "この章を 1 文で言うと、ジョブは「失敗した注文は DB に一切触らず次の回へ回す」ことを保証し、runner は「同じ注文を 2 つの回が同時に書かない」ことを保証している。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "シニアならここで手が止まる",
+      "steps": [
+        {
+          "title": "決済サービス自体が落ちていたら、1 回の照合で何回問い合わせるか",
+          "question": true,
+          "blocks": [
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "lines": [
+                  47,
+                  50
+                ],
+                "show": [
+                  35,
+                  51
+                ]
+              }
+            },
+            {
+              "p": "1 件の失敗では止まらなくなった。では、失敗が「1 件だけ」でなかったらどうなるか。"
+            },
+            {
+              "p": "決済サービスが 429（リクエストが多すぎる）を返し続けていて、決済中の注文が 200 件たまっているとする。1 回の照合で、決済サービスに何回問い合わせるだろうか？ 変更前と変更後で、それぞれ数えてみよう。応答が返らずにタイムアウトし続ける場合も考えてみよう。"
+            }
+          ]
+        },
+        {
+          "title": "答え：変更前は 1 回、変更後は 200 回",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/payment/httpGateway.ts",
+                "lines": [
+                  46,
+                  47
+                ],
+                "show": [
+                  42,
+                  50
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "`findCharge` は 404 以外の失敗を、すべて `PaymentUnavailableError` にする。429 も 503 も、API キーの誤りによる 401 も同じになる。ジョブの catch はこれを全部受けて、次の注文へ進む。",
+              "basis": "fact"
+            },
+            {
+              "table": {
+                "head": [
+                  "",
+                  "変更前",
+                  "変更後"
+                ],
+                "rows": [
+                  [
+                    "429 が続く・200 件",
+                    "1 件目で回が止まる → 1 回",
+                    "200 回を続けて送る"
+                  ],
+                  [
+                    "タイムアウトが続く・200 件",
+                    "10 秒で回が止まる",
+                    "200 × 10 秒 ≒ 33 分"
+                  ],
+                  [
+                    "ログ",
+                    "reconcile failed が 1 行",
+                    "注文ごとの error が 200 行 + 集計"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "しかも、決済中の注文が増えるのは、まさに決済サービスの障害中である。注文確定は、障害やタイムアウトのときに注文を PENDING のまま残す（`orderService.ts:56-58`）。相手が弱っているときほど、問い合わせの件数が増える。",
+              "basis": "fact"
+            },
+            {
+              "p": "変更前の「最初の失敗で止まる」は、意図して作られたものではない。それでも、相手全体が不調なときに問い合わせを 1 回で止めるブレーキとして働いていた。変更はこの振る舞いを消したが、ブレーキの役目を代わりに果たすものは入れていない。",
+              "basis": "inferred"
+            },
+            {
+              "p": "消す前に「その柵は何を守っていたか」を問うこの読み方を、Chesterton の柵と呼ぶ。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "直し方と、その直し方で本当に防げるか",
+          "blocks": [
+            {
+              "p": "最初に思い付くのは、「429・5xx・接続失敗の `PaymentUnavailableError` で抜ける」案だ。しかし、この変更のテストがそれを否定している。"
+            },
+            {
+              "code": {
+                "file": "test/reconcilePendingPayments.test.ts",
+                "lines": [
+                  48,
+                  55
+                ],
+                "show": [
+                  47,
+                  57
+                ]
+              }
+            },
+            {
+              "p": "このテストは、o1 だけが 503 を返すときにも o2 と o3 の処理を続ける、と約束している。5xx で抜ける案では、o1 で抜けるので o3 は PAID にならず、55 行目が落ちる。本番でも、ある注文だけが 503 を返し続ければ、その注文は `ORDER BY updated_at` で毎回先頭に並び、毎回そこで抜ける。これでは変更前と同じ詰まりに戻り、変更の利点を打ち消す。「3 回続けて失敗したら止める」案も、失敗し続ける注文が 3 件先頭に並べば、同じことになる。",
+              "basis": "fact"
+            },
+            {
+              "snippet": {
+                "label": "修正案（このリポジトリにないコード）",
+                "lang": "typescript",
+                "text": "} catch (error) {\n  summary.skipped.push({ orderId: order.id, error });\n  // 429（減らしてくれ）と接続失敗（status 0）は、どの注文を聞いても同じ結果になる。\n  // 残りは PENDING_PAYMENT のまま、次の回に回す\n  if (error instanceof PaymentUnavailableError \u0026\u0026 (error.status === 0 || error.status === 429)) {\n    break;\n  }\n}"
+              }
+            },
+            {
+              "p": "具体的な値で確かめる。200 件の注文に 429 が返る場合、問い合わせは 1 回で止まる。残りの 199 件は DB に触られないので、次の回にもう一度対象になる。接続失敗も 1 回で止まる。上のテストの o1 は 503 なので抜けず、テストは通る。ただし、429 が特定の注文にだけ返ることがないかは、決済サービスの仕様しだいである。",
+              "basis": "inferred"
+            },
+            {
+              "p": "この案でも防げない場合が残る。5xx が全件に返り続ける場合と、タイムアウトが続く場合は、やはり 200 回問い合わせる。どちらも、1 回の失敗だけでは、1 件の不調か全体の不調かを区別できない。止める条件を足すなら、詰まりとの取引になるので、チームで決める。また、止めたことと、問い合わせなかった件数を summary に出さないと、ログで気付けない。",
+              "basis": "inferred"
+            },
+            {
+              "p": "重さは「提案」にする。問い合わせはループの中で 1 件ずつ await するので、同時に飛ぶのは常に 1 本だけ。runner のおかげで回も重ならず、データは壊れない。決済サービスが、429 を受けても送り続ける相手をどう扱うか（制限を強めるか、など）は、渡されたファイルからは分からない。マージの前に、書き手が決済サービスの文書でそこを確かめるとよい。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "ほかに見つけたこと（短く）",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/server.ts",
+                "lines": [
+                  29,
+                  36
+                ],
+                "show": [
+                  27,
+                  37
+                ]
+              }
+            },
+            {
+              "list": [
+                "Nit：`skipped` という言葉が 2 つの意味で使われている。29 行目では「回ごと実行しなかった」、36 行目では「注文が失敗して残った」。ログを `skipped` で検索すると両方が混ざる。注文のほうは、33 行目の言い方に合わせて `leftPending` にすると、名前と中身が一致する",
+                "問い：catch は、プログラムの誤り（TypeError など）も「その注文の skipped」に変える。誤りが入ると、全件が毎回 skipped になるだけで、回は失敗しない。集計の行に `0 paid, 0 failed, 200 skipped` と出るので気付けはするが、気付けるかどうかは、誰かがこの行を見ているかにかかっている",
+                "問い（変更前から）：`findCharge` は 401 なども `PaymentUnavailableError` にする（`src/payment/httpGateway.ts:47`）。しかし型のコメント（`src/payment/gateway.ts:31`）は「5xx・429・接続失敗」と言っている。名前と中身がずれているので、新しい catch では、API キーの誤りも一時的な失敗と同じ skipped に紛れる",
+                "問い：毎回 skipped に出続ける注文に、誰が気付くか。リポジトリの中にあるのは console のログだけで、警報の仕組みは見当たらない",
+                "問い（外部しだい）：24 時間を超えて決済中のままの注文に、`findCharge` は記録を返すか。冪等キーの保持期間は 24 時間とコメントにある（`src/payment/gateway.ts:6`）。期限を過ぎて 404 が返るなら、こちらのコード（`httpGateway.ts:46`）がそれを null に変え、課金済みなのに PAYMENT_FAILED にしてしまう。変更前も、失敗し続ける注文は PENDING のまま残っていたので、この変更で増えた問題ではない"
+              ]
+            },
+            {
+              "p": "この 5 つの重さはどれも、名前の Nit か、確かめ方を聞く問いにとどまる。誤りを、このリポジトリの中の事実だけで、壊れる具体的な入力として示せるものはない。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "気にしそうだが、気にしなくてよいところ",
+          "blocks": [
+            {
+              "table": {
+                "head": [
+                  "気にしそうなこと",
+                  "気にしなくてよい理由",
+                  "確かめた場所"
+                ],
+                "rows": [
+                  [
+                    "戻り値が void から summary に変わった",
+                    "呼び出し元は server.ts とテストだけ",
+                    "grep：`src/server.ts:23`、テスト 2 ファイル"
+                  ],
+                  [
+                    "async な setInterval で、処理されない reject が出る",
+                    "本体を try/catch で包んでいる",
+                    "`src/server.ts:26-40`"
+                  ],
+                  [
+                    "runner の旗が例外で立ちっぱなしになる",
+                    "finally で戻す。テストもある",
+                    "`reconcilePendingPayments.ts:66-68`、`test/reconcileRunner.test.ts:36-46`"
+                  ],
+                  [
+                    "ログに秘密が出る",
+                    "findCharge の error に入るのは status と cause。API キーはヘッダにだけある",
+                    "`httpGateway.ts:47,58,64-68`"
+                  ],
+                  [
+                    "新しい import は実在するか",
+                    "どちらも既存の型",
+                    "`src/payment/gateway.ts:32,43`、`src/orders/order.ts:3`"
+                  ],
+                  [
+                    "本物の DB の save 失敗も catch で受けるか",
+                    "同期の `.run` が async 関数の中で投げるので、reject になる",
+                    "`sqliteOrderRepository.ts:39-52`"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "この章を 1 文で言うと、1 件ずつの失敗を閉じ込めることは安全にできている。しかし、「全体が不調なら早く止める」という約束が、この変更で黙って消えている。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "まとめ",
+      "steps": [
+        {
+          "title": "この変更はコードベースを良くしたか。シニアならどうコメントするか",
+          "blocks": [
+            {
+              "p": "良くした。1 件の失敗で、後ろの注文の決着が止まり続けるという実際の問題を、やり直しても結果が変わらない操作だけで安全に解いている。runner は、回の重なりによる上書きも防いでいる。止めるべき指摘はない。",
+              "basis": "inferred"
+            },
+            {
+              "list": [
+                "**良い点**：注文ごとに失敗を閉じ込めても安全な理由（読むだけの問い合わせ、1 文の upsert）がそろっていて、コメントもそれを正しく言っている。summary を返してログは server に任せる分け方と、例外の場合まで含めた runner のテストも良い",
+                "**提案**：429 と接続失敗（status 0）の `PaymentUnavailableError` では、ループを抜けてほしい。変更前の「最初の失敗で止まる」は、障害中に問い合わせを 1 回で止めていた。いまは決済中の 200 件すべてに問い合わせる。5xx まで含めると、503 を返し続ける 1 件で毎回止まり、前と同じ詰まりに戻る（`test/reconcilePendingPayments.test.ts:48,55` も落ちる）。5xx やタイムアウトが全件に続く場合は残るので、止める条件をチームで決めたい",
+                "**提案**：runner のコメントに、本当の理由を書いてほしい。重なると、確定し直して PAID になった注文を、古い答えで PAYMENT_FAILED に上書きしうる。「無駄な問い合わせ」だけだと、外してよいと思われる",
+                "**Nit**：注文ごとの `skipped` は、回ごとの「reconcile skipped」と言葉がかぶる。`leftPending` にしてはどうか。保存の失敗のテストに `assert.deepEqual(first.paid, [])` も足したい"
+              ]
+            }
+          ]
+        },
+        {
+          "title": "このツアーで追体験したこと",
+          "blocks": [
+            {
+              "list": [
+                "行を読む前に「誰が待たされていたか」を言葉にし、`orderService.ts` まで遡って、決済中の注文がどこで生まれるかを確かめた",
+                "「次の回にやり直せる」というコメントを信じずに、save に飛んで、1 文の upsert であることを確かめた",
+                "コミットメッセージの「二重に問い合わせる」を鵜呑みにせず、利用者の操作を挟んだ時系列で、回が重なったときに本当は何が起きるかを追った",
+                "「十分」と言うために、プロセスが 1 つであること（`package.json`）と、確定し直せない状態（`orderService.ts:33`）を示した",
+                "消えた振る舞い（最初の失敗で止まる）が、意図せず何を守っていたかを、429 と 200 件という具体的な値で数えた",
+                "修正案を、この変更のテストと、失敗し続ける注文が先頭に並ぶ場合に当てて確かめ、5xx で止める案と回数で止める案を捨てた",
+                "見つけたことに重さを付け、壊れる入力を示せないものは問いにとどめた"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

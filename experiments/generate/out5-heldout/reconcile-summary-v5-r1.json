@@ -1,0 +1,622 @@
+{
+  "version": 1,
+  "title": "照合バッチを「1 件ずつ・重ならずに」した変更を、シニアの目で読む",
+  "base": "main",
+  "head": "feature/reconcile-summary",
+  "chapters": [
+    {
+      "title": "対象",
+      "steps": [
+        {
+          "title": "照合バッチに入った 2 つのコミット",
+          "blocks": [
+            {
+              "target": true
+            },
+            {
+              "quote": "Keep reconciling the remaining orders when one of them fails\nA single findCharge timeout or a failed save used to abort the whole run, so every order after it waited another five minutes. Handle each order on its own: an order that fails is left in PENDING_PAYMENT untouched and is picked up again on the next run. The job now returns a summary, which the server logs."
+            },
+            {
+              "quote": "Do not start a reconcile run while the previous one is still going\nWhen the payment service is slow a run can take longer than the five-minute interval, and the next tick would start querying the same orders again. Skip that tick instead and log it."
+            },
+            {
+              "p": "どちらのコミットにも `Co-Authored-By: Claude` が付いている。AI と一緒に書いた変更である。",
+              "basis": "fact"
+            },
+            {
+              "p": "コミットメッセージには「後ろの注文は 5 分待たされた」「同じ注文にまた問い合わせてしまう」と書いてある。このツアーでは、この 2 つの主張を、そのまま信じずにコードで確かめていく。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "何のための変更か",
+      "steps": [
+        {
+          "title": "決済中のまま待っている利用者がいる",
+          "blocks": [
+            {
+              "p": "照合バッチが相手にするのは、注文を確定するときに決済サービスが障害やタイムアウトを返し、課金されたかどうか分からないまま `PENDING_PAYMENT` に残った注文である。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/orders/orderService.ts",
+                "at": "base",
+                "lines": [
+                  56,
+                  57
+                ],
+                "show": [
+                  42,
+                  59
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "このとき利用者には 503 と「決済の結果を確認しています。しばらくしてから注文履歴をご確認ください」が返る（`src/handlers/checkout.ts:24-31`）。利用者は、照合バッチが PAID か PAYMENT_FAILED に決めるまで待っている。",
+              "basis": "fact"
+            },
+            {
+              "p": "最初の仮説：決済サービスが不安定なとき、1 件の失敗のせいで、ほかの注文の確定まで遅れていた。この変更で、利用者の待ち時間が短くなる。運用する人は、1 回ごとの結果をログで見られるようになる。",
+              "basis": "inferred"
+            },
+            {
+              "list": [
+                "確かめること ①：失敗した注文を、間違って確定させていないか（`PENDING_PAYMENT` の「分からない」という意味を守っているか）",
+                "確かめること ②：変更前、後ろの注文は本当に「5 分待つ」だけだったのか",
+                "確かめること ③：2 つ目のコミット（回を重ねない）は、1 つ目とどう関係するのか"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "全体の地図",
+      "steps": [
+        {
+          "title": "処理の流れ（変更していない部分も含めて）",
+          "blocks": [
+            {
+              "pre": "POST /orders/:id/checkout\n └ OrderService.checkout\n    ├ PENDING_PAYMENT を保存\n    ├ payments.charge（10 秒で打ち切り）\n    │  成功 → PAID ／ 拒否 → PAYMENT_FAILED\n    └ 障害・タイムアウト → PENDING_PAYMENT のまま\n           （課金されたか分からない）\n\nserver.ts の setInterval（5 分ごと）   … 変更\n └ createReconcileRunner              … 新規\n    └ reconcilePendingPayments        … 変更\n       ├ 10 分以上前の PENDING_PAYMENT を取る\n       └ 1 件ずつ findCharge → 状態を決めて save"
+            },
+            {
+              "p": "変更した場所は 3 つある。照合の関数の中（try/catch と集計）、重なりを止める runner（新しく作った）、そして server.ts での呼び方とログ。注文確定の側と、決済サービスとの接続は変わっていない。",
+              "basis": "fact"
+            },
+            {
+              "p": "ただし、照合の関数が正しいかどうかは、差分の外を見ないと決まらない。`findCharge` が何を返し、何を投げるのか（`src/payment/httpGateway.ts`）。一覧が何を返し、`save` が何を書くのか（`src/orders/sqliteOrderRepository.ts`）。この 2 つを開きに行く。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "どこに時間を使うか",
+          "blocks": [
+            {
+              "table": {
+                "head": [
+                  "部分",
+                  "行数の目安",
+                  "読み方"
+                ],
+                "rows": [
+                  [
+                    "照合のループ（try/catch）",
+                    "約 20 行",
+                    "厚く。お金の状態を決める場所"
+                  ],
+                  [
+                    "createReconcileRunner",
+                    "約 15 行",
+                    "厚く。何を守っているのかを確かめる"
+                  ],
+                  [
+                    "server.ts のログ",
+                    "約 20 行",
+                    "短く。ただし言葉は運用する人の目で読む"
+                  ],
+                  [
+                    "テスト（2 ファイル）",
+                    "約 100 行",
+                    "肝心の行を壊したら落ちるか、だけを見る"
+                  ],
+                  [
+                    "ReconcileSummary の型、import",
+                    "約 10 行",
+                    "機械的。読み流す"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "差分はおよそ 150 行ある。頭を使うのは、ループの 20 行と runner の 15 行に絞る。テストは 1 本ずつ読まない。「どの行を壊したら、どれが落ちるか」の表で済ませる。",
+              "basis": "opinion"
+            },
+            {
+              "p": "この章を 1 文で言うと：照合バッチは、注文確定が判断を保留した注文について、決済サービスの記録だけを根拠に結論を出す場所である。今回の変更は、その結論の出し方ではなく、1 回の中での進み方と、回同士の重なり方を変えた。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "仕組み",
+      "steps": [
+        {
+          "title": "注文ごとに try で囲む",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "lines": [
+                  47,
+                  50
+                ],
+                "show": [
+                  34,
+                  52
+                ]
+              }
+            },
+            {
+              "p": "変更前は、ループの中で 1 回でも例外が出ると、関数全体が reject していた。残りの注文には手が付かず、server.ts が `reconcile failed` を 1 行出すだけだった（base `src/server.ts:23-25`）。",
+              "basis": "fact"
+            },
+            {
+              "p": "変更後は 1 件ずつ try で囲み、失敗した注文を `skipped` に積んで次の注文へ進む。最後に、PAID にした注文、PAYMENT_FAILED にした注文、残した注文を、それぞれ配列にして返す。",
+              "basis": "fact"
+            },
+            {
+              "p": "`findCharge` の失敗だけでなく `save` の失敗も同じ try の中にある。このため「問い合わせはできたが保存できなかった」注文も、集計では成功に数えられない。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "catch に何が飛んでくるか、そこで何を決めないか",
+          "blocks": [
+            {
+              "p": "catch が何を受けるのかは、呼び出し先を見ないと決まらない。`findCharge` の本体を開く。",
+              "basis": "inferred"
+            },
+            {
+              "code": {
+                "file": "src/payment/httpGateway.ts",
+                "at": "base",
+                "lines": [
+                  46,
+                  47
+                ],
+                "show": [
+                  42,
+                  50
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "null を返すのは 404 のときだけである。それ以外の失敗の応答は `PaymentUnavailableError`、時間切れは `PaymentTimeoutError` として投げる（同じファイルの 63-68 行）。「記録がない」と「分からない」は、関数の境目で別のものとして届く。",
+              "basis": "fact"
+            },
+            {
+              "p": "新しい catch は、この区別を潰していない。どのエラーも `skipped` に入れ、PAYMENT_FAILED にはしない。",
+              "basis": "fact"
+            },
+            {
+              "p": "もしエラーを PAYMENT_FAILED に倒していたら、タイムアウトの陰で課金が済んでいた注文が「失敗」になる。利用者から見れば、お金は取られたのに注文は失敗、という状態である。PENDING_PAYMENT は「分からない」という意味なので、エラーのときはそれを動かさないのが正しい。",
+              "basis": "inferred"
+            },
+            {
+              "p": "head の 48 行目のコメント「状態は書き換え前のまま（または保存されていない）」も確かめた。`findCharge` で投げた場合、order には何も書いていない。`save` で投げた場合、書き換えたのは一覧から取った手元のオブジェクトだけで、保存はされていない。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "先頭の 1 件が毎回失敗したら",
+          "question": true,
+          "blocks": [
+            {
+              "p": "決済中のまま古くなった注文が、古い順に A、B、C の 3 件ある。A の問い合わせだけが、毎回タイムアウトする。"
+            },
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "at": "base",
+                "lines": [
+                  22,
+                  32
+                ],
+                "note": "変更前"
+              }
+            },
+            {
+              "p": "変更前のコードで、B と C が PAID か PAYMENT_FAILED になるのはいつだろうか。コミットメッセージは「後ろの注文は、もう 5 分待たされた」と書いている。"
+            }
+          ]
+        },
+        {
+          "title": "答え：B と C は、ずっと処理されない",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/orders/sqliteOrderRepository.ts",
+                "at": "base",
+                "lines": [
+                  56,
+                  56
+                ],
+                "show": [
+                  54,
+                  59
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "本番の一覧は `ORDER BY updated_at` で、古い順に返る。",
+              "basis": "fact"
+            },
+            {
+              "p": "A は 23 行目で投げるので、31 行目の save まで届かない。A の updated_at は変わらず、次の回も A が先頭に来て、また A で止まる。",
+              "basis": "fact"
+            },
+            {
+              "p": "したがって、A が失敗し続けるかぎり、B と C は 5 分どころか、いつまでも処理されない。コミットメッセージの「5 分待つ」が当たるのは、一時的な失敗のときだけである。同じ注文が失敗し続ける場合を、軽く言っている。",
+              "basis": "inferred"
+            },
+            {
+              "p": "変更後は、A が `skipped` に入り、B と C はその回のうちに確定する。テスト「決済サービスへの問い合わせに失敗した注文は決済中のまま残し、残りの注文は処理を続ける」が、o1 と o2 が失敗しても o3 が PAID になることを確かめている（`test/reconcilePendingPayments.test.ts:42-61`）。",
+              "basis": "fact"
+            },
+            {
+              "p": "仮説はこう直る。この変更は「遅れを短くする」変更である以上に、「1 件の注文が全員を止める」状態をなくす変更だった。先頭の 1 件が詰まって後ろ全部が進めないこの形は、head-of-line blocking と呼ばれる。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "回が重ならないようにする仕組み",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "lines": [
+                  62,
+                  68
+                ],
+                "show": [
+                  59,
+                  70
+                ]
+              }
+            },
+            {
+              "p": "`running` を見るのと立てるのは、最初の `await` より前の、同じ同期の区間で起きる。テスト 1 は、1 回目が終わる前に呼んだ 2 回目が null を返し、`run` が 1 回しか呼ばれないことを確かめている（`test/reconcileRunner.test.ts:18-22`）。",
+              "basis": "fact"
+            },
+            {
+              "p": "`finally` で旗を戻すので、例外で終わった回のあとでも、次の回が動く（テスト 3、`test/reconcileRunner.test.ts:36-46`）。",
+              "basis": "fact"
+            },
+            {
+              "p": "2 つのコミットは、ここでつながっている。変更前は、タイムアウトが 1 回出ればその回が終わったので、長い回は起きにくかった。変更後は、全件がそれぞれ 10 秒（`src/app.ts:12`）待ちうる。30 件なら 300 秒で、ちょうど 5 分になる。1 つ目のコミットが長い回を生みやすくし、2 つ目がその重なりを止めている。",
+              "basis": "inferred"
+            },
+            {
+              "snippet": {
+                "label": "このリポジトリにないコード：選ばなかった設計（終わってから次を予約する）",
+                "lang": "typescript",
+                "text": "async function tick() {\n  try {\n    /* 照合して、結果をログに出す */\n  } finally {\n    setTimeout(tick, 5 * 60 * 1000);\n  }\n}\nsetTimeout(tick, 5 * 60 * 1000);"
+              }
+            },
+            {
+              "p": "この形なら旗は要らず、重なりは仕組みの上で起きない。代わりに、間隔は「5 分 + 実行時間」にずれ、回が遅れていることがログに出ない。今の設計は 5 分の刻みを保ち、飛ばした回を `console.warn` で見せる。決済サービスが遅いことに気付きやすいのは、今の設計のほうである。どちらを選んでもよく、ここは好みの範囲に収まる。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "テストは、肝心の行を壊したら落ちるか",
+          "blocks": [
+            {
+              "table": {
+                "head": [
+                  "壊し方",
+                  "落ちるテスト"
+                ],
+                "rows": [
+                  [
+                    "ループの try を外す",
+                    "問い合わせに失敗した注文は…（例外が外に出て reject）"
+                  ],
+                  [
+                    "`save` を try の外に出す",
+                    "保存に失敗した注文も…"
+                  ],
+                  [
+                    "catch でエラーを PAYMENT_FAILED にする",
+                    "2 本の「PENDING_PAYMENT のまま」の assert"
+                  ],
+                  [
+                    "`if (running) return null` を消す",
+                    "runner のテスト 1（calls が 2 になる）"
+                  ],
+                  [
+                    "`finally` で旗を戻さない",
+                    "runner のテスト 3（2 回目が null）"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "保存失敗のテストは、1 回目で o1 を残し、2 回目で `ch_1` 付きの PAID になることまで追っている（`test/reconcilePendingPayments.test.ts:63-82`）。コメントの「次の回に同じ判断をやり直せる」を、振る舞いとして確かめている。",
+              "basis": "fact"
+            },
+            {
+              "p": "既存のテストは期待値を変えておらず、`summary` を確かめる assert を 1 行足しただけである（`change.diff` のテストの 2 つ目のハンク）。通すためにテストを書き換えた形跡はない。",
+              "basis": "fact"
+            },
+            {
+              "p": "server.ts のログの組み立てにはテストがない。数行の配線なので、テストを足すより読んで確かめるほうが安い。",
+              "basis": "opinion"
+            },
+            {
+              "p": "この章を 1 文で言うと：決済サービスが答えられなかった注文は判断を保留して次の回に回し、ほかの注文はその回のうちに確定させる。そして、1 つのプロセスの中では、回が重ならないことを保証している。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "シニアならここで手が止まる",
+      "steps": [
+        {
+          "title": "2 つの回が重なったら、何が起きるか",
+          "question": true,
+          "blocks": [
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "lines": [
+                  56,
+                  57
+                ],
+                "show": [
+                  55,
+                  58
+                ]
+              }
+            },
+            {
+              "p": "runner のコメントは、重なると「同じ注文に二重に問い合わせてしまう」と書いている。問い合わせは読むだけなので、同じ注文には同じ答えが返るように見える。"
+            },
+            {
+              "p": "では、変更前に 2 つの回が重なったとき、増えるのは無駄な問い合わせだけだっただろうか。重なった 2 回目が、注文の状態を間違った値にしてしまうことはありうるだろうか。"
+            }
+          ]
+        },
+        {
+          "title": "答え：古い一覧で、新しい状態を上書きしうる",
+          "blocks": [
+            {
+              "pre": "0:00 回1   一覧を取る。A は PENDING_PAYMENT\n5:00 回2   一覧を取る。A はまだ PENDING_PAYMENT\n6:00 回1   A の記録なし → PAYMENT_FAILED を保存\n7:00 利用者 A をもう一度確定\n           → PENDING_PAYMENT を保存、charge を送る\n7:05 回2   A を問い合わせる → 記録はまだ見えない\n           → 5:00 の一覧の A を PAYMENT_FAILED で保存\n7:10 利用者 charge がタイムアウト → 何も保存しない\n結果       A は PAYMENT_FAILED。課金は通ったかもしれない"
+            },
+            {
+              "p": "PAYMENT_FAILED からもう一度確定できることは、注文確定の側が認めている（`src/orders/orderService.ts:33`）。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/orders/sqliteOrderRepository.ts",
+                "at": "base",
+                "lines": [
+                  44,
+                  49
+                ],
+                "show": [
+                  39,
+                  52
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "回 2 は、5:00 に取った一覧のオブジェクトを書き換えて `save` する。`save` は行を丸ごと上書きする upsert で、「まだ PENDING_PAYMENT か」「取ったあとに誰かが更新していないか」を確かめない。",
+              "basis": "fact"
+            },
+            {
+              "p": "7:05 の時点で記録がまだ見えないかどうかは、決済サービスの作りしだいで、ここでは確かめられない。ただ、見えなかった場合、課金されたのに PAYMENT_FAILED の注文ができる。照合バッチは PENDING_PAYMENT しか拾わないので、この注文を二度と見ない。",
+              "basis": "inferred"
+            },
+            {
+              "p": "つまり runner が防いでいるのは、コメントの言う「無駄な問い合わせ」よりずっと重いもの、つまり古い一覧による上書きである。コメントは、この理由を書いていない。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "旗が守る範囲は、1 つのプロセスの中だけ",
+          "blocks": [
+            {
+              "p": "`running` はクロージャの中の変数で、server.ts が 1 回作るだけである（`src/server.ts:23`）。プロセスを 2 つ動かせば旗も 2 本になり、回は重なる。",
+              "basis": "fact"
+            },
+            {
+              "p": "このリポジトリには、何台で動かすか、入れ替えのときに新旧のプロセスが同時に動くかを決めるファイル（デプロイの設定など）がない。",
+              "basis": "fact"
+            },
+            {
+              "p": "本番で server.ts は、いつも 1 プロセスだけだろうか。入れ替えのとき、古いプロセスと新しいプロセスが同時に 5 分ごとの照合を走らせることはないだろうか。マージの前に、運用の担当に確かめたい。"
+            },
+            {
+              "snippet": {
+                "label": "このリポジトリにないコード：読んだときから変わっていなければ書く（別の変更としての案）",
+                "lang": "typescript",
+                "text": "/** 一覧で読んだときから更新されていなければ書く。書けたかを返す */\nasync saveIfUnchanged(order: Order, readAt: Date): Promise\u003cboolean\u003e {\n  const result = this.#db\n    .prepare(\n      `UPDATE orders SET status = ?, charge_id = ?, updated_at = ?\n       WHERE id = ? AND updated_at = ?`,\n    )\n    .run(order.status, order.chargeId ?? null, this.#now().toISOString(),\n      order.id, readAt.toISOString());\n  return result.changes === 1;\n}"
+              }
+            },
+            {
+              "p": "上の時系列で確かめる。条件を `status = 'PENDING_PAYMENT'` だけにすると、7:05 の A は再確定で PENDING_PAYMENT に戻っているので、上書きは通ってしまい防げない。updated_at も条件にすれば、7:00 の保存で値が変わっているので、回 2 の UPDATE は 0 行で終わり、上書きは起きない。プロセスがいくつあっても効く。",
+              "basis": "inferred"
+            },
+            {
+              "p": "ただ、この無条件の上書きは変更前からある書き方で、この差分の範囲を越える。この変更では止めず、別の変更として提案する。このような書き方は、楽観的な排他制御（条件付き更新）と呼ばれる。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "ログを読む人の言葉",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/server.ts",
+                "lines": [
+                  29,
+                  36
+                ],
+                "show": [
+                  25,
+                  41
+                ]
+              }
+            },
+            {
+              "table": {
+                "head": [
+                  "ログの語",
+                  "意味",
+                  "対応が要るか"
+                ],
+                "rows": [
+                  [
+                    "`reconcile skipped: …`",
+                    "前の回が終わっておらず、この回を飛ばした",
+                    "続くなら要る（決済サービスが遅い）"
+                  ],
+                  [
+                    "`N failed`",
+                    "課金の記録がなく、PAYMENT_FAILED にした",
+                    "要らない。いつもの業務の結果"
+                  ],
+                  [
+                    "`N skipped`",
+                    "問い合わせか保存に失敗し、決済中のまま残した",
+                    "要る"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "`failed` は業務の結果で、`skipped` は処理の失敗である。ふつうにログを読む人の感覚とは逆になる。さらに `skipped` という語が、「回を飛ばした」と「注文を残した」の 2 つの意味で使われている（29 行目と 36 行目、型の 10-14 行目）。",
+              "basis": "fact"
+            },
+            {
+              "p": "夜中に `0 paid, 5 failed, 2 skipped` を見た人は、5 件の方を追いかけかねない。すぐ上の個別のログは、すでに `left pending` という言葉を使っている。型の名前もこれに揃えて `paymentFailed` / `leftPending` のようにすれば、ログ 1 行で読み違えなくなる。重さは提案。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "読者が気にしそうだが、気にしなくてよいところ",
+          "blocks": [
+            {
+              "list": [
+                "障害中に決済サービスを叩き続けないか → ループは 1 件ずつ await するので、同時に出る問い合わせは 1 本だけ。10 秒で打ち切り（`src/app.ts:12`、`src/payment/httpGateway.ts:61`）、runner で回も重ならない。止める仕組み（サーキットブレーカー）を足すほどの負荷ではない",
+                "広い catch がプログラムの誤りまで飲み込む → 飲み込んでも状態は書かれず、注文ごとに error 付きでログに出る（`src/server.ts:32-34`）。見えなくなるわけではない",
+                "回の途中でプロセスが落ちたら → 注文ごとに save するので、済んだ注文は済んだまま。残りは次の回に拾われる",
+                "一覧を全件まとめて読む → 変更前からこの書き方で、(status, updated_at) の索引がある（`db/migrations/001_create_orders.sql:11-12`）。この差分は件数の扱いを変えていない",
+                "戻せるか → スキーマも保存されるデータの形も変えていない。コードを戻せば元に戻る"
+              ]
+            },
+            {
+              "p": "上の 5 つは、どれもこのリポジトリの中で、示した行を読んで確かめた。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "短く挙げる残り",
+          "blocks": [
+            {
+              "list": [
+                "提案：runner のコメントに、本当に防いでいるもの（古い一覧での上書き）を書く。今の「二重に問い合わせてしまう」では、次に読んだ人が「無駄なだけなら外してよい」と判断しかねない",
+                "提案（軽い）：毎回 `skipped` になる注文に気付く手段が、ログの繰り返ししかない。個別のログに `updatedAt`（いつから決済中か）を足せば、ずっと残っている注文をログから絞り込める。変更前より悪くはなっていない",
+                "問い（軽い）：ログの行が増え、書式も変わる。このログを拾って警報にしている仕組みがあれば、合わせて直す必要がある。リポジトリの中には見当たらない",
+                "Nit：`createReconcileRunner` の中身は `ReconcileSummary` に依存しないが、型でそれに結び付いている。呼び出し元が 1 つしかないので、今はこのままでよい"
+              ]
+            },
+            {
+              "p": "この章を 1 文で言うと：この変更の正しさは、1 つのプロセスの中では保証されている。プロセスの外（新旧のプロセスの重なり）と、ログを読む人の理解は、まだ保証されていない。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "まとめ",
+      "steps": [
+        {
+          "title": "全体として、コードベースを良くしたか",
+          "blocks": [
+            {
+              "p": "良くした。変更前は、同じ注文が失敗し続けると、後ろの注文がいつまでも処理されなかった。変更後は、その 1 件だけを残して残りを確定させる。しかも「分からない」を PAYMENT_FAILED に倒していない。必須の指摘はない。",
+              "basis": "inferred"
+            },
+            {
+              "table": {
+                "head": [
+                  "札",
+                  "コメント"
+                ],
+                "rows": [
+                  [
+                    "良い点",
+                    "エラーを PAYMENT_FAILED にせず PENDING_PAYMENT のまま残すので、「課金されたか分からない」という意味を守っている。保存に失敗した注文が次の回で確定するところまでテストで追っているのも良い"
+                  ],
+                  [
+                    "問い",
+                    "本番で server.ts は常に 1 プロセスか。入れ替えのときに新旧のプロセスが同時に照合を走らせないか。重なるなら runner では防げず、古い一覧で上書きしうる"
+                  ],
+                  [
+                    "提案",
+                    "`failed` / `skipped` を `paymentFailed` / `leftPending` のような名前にしたい。今のログでは、対応の要らない件数の方が「failed」に見える"
+                  ],
+                  [
+                    "提案",
+                    "runner のコメントに、重なったときの本当の害（古い一覧での上書き）を書いてほしい。外してよいコードだと思われないように"
+                  ]
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "追体験したこと",
+          "blocks": [
+            {
+              "list": [
+                "行を読む前に「誰が何に困らなくなるか」を言葉にし、確かめることを 3 つ立てた",
+                "catch が正しいかを決めるために、差分の外の `findCharge` を開き、「記録がない」と「分からない」が別のものとして届くことを確かめた",
+                "「5 分待つ」というコミットメッセージを、一覧の並び順（`ORDER BY updated_at`）と保存されない updated_at で追い、実際は「ずっと待つ」になりうると直した",
+                "2 つのコミットを別々に読まず、「続けるようにしたから回が長くなり、重なりを止める必要が出た」とつなげた",
+                "コメントの「二重に問い合わせるだけ」を信じず、時系列を書いて、古い一覧での上書きという本当の害を見つけた",
+                "修正案（条件付き UPDATE）を時系列に当て、status だけを条件にしても防げないことを確かめてから出した",
+                "負荷、広い catch、途中で落ちる、規模は、根拠の行を示して「気にしなくてよい」と判断した",
+                "ログを、書いた人ではなく、夜中に読む人の目で読んだ"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

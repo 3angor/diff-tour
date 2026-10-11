@@ -1,0 +1,663 @@
+{
+  "version": 1,
+  "title": "注文のキャンセル：「まだ課金が確定していない」を信じずに読む",
+  "base": "main",
+  "head": "feature/order-cancellation",
+  "chapters": [
+    {
+      "title": "対象",
+      "steps": [
+        {
+          "title": "対象の変更",
+          "blocks": [
+            {
+              "target": true
+            },
+            {
+              "quote": "Orders that were never charged are simply marked CANCELLED. Paid orders are refunded first and only then marked CANCELLED, so a failed refund leaves the order PAID and the customer can try again. The refund uses a fixed per-order idempotency key, so retries cannot pay out twice. The cancellation fee is rounded down."
+            },
+            {
+              "p": "3 つのコミットを、スキーマ → 業務ロジック → HTTP の順に積んでいる。真ん中のコミットのメッセージは 3 つのことを言い切っている。返金に失敗したら PAID に残る。冪等キーがあるので二重には返金しない。手数料は切り捨てる。",
+              "basis": "fact"
+            },
+            {
+              "p": "メッセージに書いてあることは前提にしない。確かめる対象として扱う。これは AI が書いたコードでも人が書いたコードでも同じだ。",
+              "basis": "opinion"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "何のための変更か",
+      "steps": [
+        {
+          "title": "誰が何に困らなくなるか",
+          "blocks": [
+            {
+              "p": "これまで注文には取り消す手段がなかった。base の server.ts が受け付けるのは `POST /orders/:id/checkout` だけで、状態にも CANCELLED がない。",
+              "basis": "fact"
+            },
+            {
+              "p": "この変更で、お客様が自分で注文を取り消せるようになる。コミットメッセージによると、取り消したときの振る舞いは次のとおり。",
+              "basis": "fact"
+            },
+            {
+              "table": {
+                "head": [
+                  "注文の状態",
+                  "取り消したとき（コミットメッセージの説明）"
+                ],
+                "rows": [
+                  [
+                    "まだ課金されていない",
+                    "CANCELLED にするだけ。返金はしない"
+                  ],
+                  [
+                    "支払い済み（PAID）",
+                    "手数料（既定は 10%）を引いて返金し、CANCELLED にする"
+                  ],
+                  [
+                    "返金に失敗した",
+                    "PAID のまま残す。503 を返して、やり直してもらう"
+                  ],
+                  [
+                    "取り消し済みなど",
+                    "409"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "仮説：この変更の芯は「課金されているか」でお金の扱いを分けるところにある。返金の分岐そのものより、どの状態を「課金されていない」と判断するかが正しさを決める。",
+              "basis": "inferred"
+            },
+            {
+              "p": "以降の章では、この表のいちばん上の行を確かめる。コードの上で「課金されていない」と扱う状態は、現実にも課金されていないと言い切れるだろうか？"
+            },
+            {
+              "p": "1 文で言うと：この変更は、注文に「取り消し」という終わり方を足し、課金済みならお金を戻すと約束する。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "全体の地図",
+      "steps": [
+        {
+          "title": "処理の流れと、時間の配り方",
+          "blocks": [
+            {
+              "pre": "[変更なし] POST /orders/:id/checkout\n  CART / PAYMENT_FAILED\n   → PENDING_PAYMENT を保存\n   → charge() ─ 成功 → PAID\n              ├ 拒否 → PAYMENT_FAILED\n              └ 障害・タイムアウト\n                  → PENDING_PAYMENT のまま\n\n[変更なし] 照合バッチ（5 分ごと）\n  10 分より古い PENDING_PAYMENT を\n  findCharge() で照合 → PAID / PAYMENT_FAILED\n\n[新規] POST /orders/:id/cancel\n  handleCancel → OrderService.cancel\n   → 状態で分岐（PAID なら refund()）\n   → save → 200 / 404 / 409 / 503"
+            },
+            {
+              "table": {
+                "head": [
+                  "場所",
+                  "読み方"
+                ],
+                "rows": [
+                  [
+                    "orderService.ts の cancel()（約 30 行）",
+                    "時間の大半をここに使う。お金と状態が動く"
+                  ],
+                  [
+                    "app.ts の手数料の 1 行",
+                    "設定の読み方を、具体的な値で追う"
+                  ],
+                  [
+                    "002 のマイグレーション",
+                    "戻せない変更なので、手順と巻き戻しを確かめる"
+                  ],
+                  [
+                    "handler / repository / server / fakes",
+                    "既存と同じ形かを確かめて、短く済ませる"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "差分の大半はテストと機械的な追随で、頭を使って読むのは cancel() の 30 行と設定の 1 行になる。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "差分の外へ：既存の状態が守っていた約束",
+          "blocks": [
+            {
+              "p": "cancel() が正しいかは、cancel() の中を読んでも決まらない。分岐の条件には既存の状態の名前が並んでいる。その状態が何を意味するかは、状態を作る側と読む側を見て初めて分かる。",
+              "basis": "opinion"
+            },
+            {
+              "code": {
+                "file": "src/orders/orderService.ts",
+                "lines": [
+                  63,
+                  64
+                ],
+                "show": [
+                  44,
+                  66
+                ],
+                "note": "変更なし。状態を作る側（checkout）"
+              }
+            },
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "lines": [
+                  17,
+                  20
+                ],
+                "show": [
+                  12,
+                  21
+                ],
+                "note": "変更なし。状態を読む側（照合バッチ）"
+              }
+            },
+            {
+              "list": [
+                "金額は円の整数で持つ（001_create_orders.sql のコメント）",
+                "PENDING_PAYMENT は「課金を送ったが、結果をまだ知らない」状態",
+                "PENDING_PAYMENT を確定させるのは照合バッチだけ",
+                "状態の遷移はアプリの手順（checkout の if）で守る。DB が守るのは status の値の集合だけ"
+              ]
+            },
+            {
+              "p": "この 4 つは、base の 001_create_orders.sql:4-6、orderService.ts の checkout、reconcilePendingPayments.ts で確かめた。",
+              "basis": "fact"
+            },
+            {
+              "p": "1 文で言うと：この変更は、checkout と照合バッチが作った「決済中」という状態の上に、新しい出口を 1 本足すものだ。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "仕組み",
+      "steps": [
+        {
+          "title": "cancel() は状態で 3 つに分ける",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/orders/orderService.ts",
+                "lines": [
+                  76,
+                  100
+                ],
+                "show": [
+                  72,
+                  104
+                ]
+              }
+            },
+            {
+              "p": "switch で 3 つに分けている。未課金として扱う 3 つの状態、PAID、それ以外（CANCELLED）だ。default で例外を投げるので、将来 OrderStatus に状態が増えても、その状態は黙って取り消されずに 409 になる。",
+              "basis": "fact"
+            },
+            {
+              "p": "手数料は Math.floor で切り捨てる。手数料を小さく丸めるので、返金額は大きい側に寄る。1999 円なら手数料は 199.9 円で 199 円に、返金は 1800 円になる。テスト（orderCancellation.test.ts:46-51）がこの値を固定している。",
+              "basis": "fact"
+            },
+            {
+              "p": "期待値の 1800 をテストに直接書き、本体と同じ式で作っていない点も良い。本体の式が間違っていれば、テストが落ちる。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "返金してから保存する順番",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/orders/orderService.ts",
+                "lines": [
+                  89,
+                  95
+                ],
+                "show": [
+                  83,
+                  103
+                ]
+              }
+            },
+            {
+              "code": {
+                "file": "test/orderCancellation.test.ts",
+                "lines": [
+                  53,
+                  60
+                ]
+              }
+            },
+            {
+              "p": "refund() が例外を投げれば、その下の status の書き換えも save も実行されない。DB は PAID のままなので、もう一度キャンセルすれば同じ分岐に入る。テストの 53-60 行がこの順番を固定している。save を refund の前に移せば、このテストが落ちる。",
+              "basis": "fact"
+            },
+            {
+              "p": "逆の順番（先に CANCELLED を保存してから返金）だと、返金に失敗したとき「取り消し済みなのにお金が戻っていない」注文が残る。しかも 409 になり、やり直すこともできない。",
+              "basis": "inferred"
+            },
+            {
+              "p": "返金額は DB でも守っている。refunded_amount には `\u003c= total_amount` の CHECK があり（002_add_cancellation.sql:10）、上限を超える値が保存できないことをテスト（sqliteOrderRepository.test.ts:41-47）で確かめている。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "マイグレーション：戻せない変更をどう安全にしているか",
+          "blocks": [
+            {
+              "schema": {
+                "migrations": "db/migrations",
+                "tables": [
+                  "orders"
+                ],
+                "focus": [
+                  "orders.status",
+                  "orders.refunded_amount"
+                ]
+              }
+            },
+            {
+              "code": {
+                "file": "src/db.ts",
+                "lines": [
+                  17,
+                  25
+                ],
+                "note": "変更なし。マイグレーションは 1 ファイルずつトランザクションの中で当たる"
+              }
+            },
+            {
+              "p": "SQLite では CHECK 制約を変えられないので、テーブルを作り直して入れ替えている。db.ts が各ファイルを BEGIN〜COMMIT で包むので、途中で失敗しても元の orders が残る。索引も作り直している（002:20）。",
+              "basis": "fact"
+            },
+            {
+              "p": "コメントの「orders を参照する外部キーはない」は、マイグレーションが 001 と 002 しかないことで確かめられる。既存の行が残ることは、001 だけを当てた DB に 002 を当てるテスト（sqliteOrderRepository.test.ts:49-66）で確かめている。",
+              "basis": "fact"
+            },
+            {
+              "p": "コードだけを base に戻しても、新しいデータを読める。base の checkout は CART と PAYMENT_FAILED 以外を 409 で弾く（base の orderService.ts:33-35）。base の save は refunded_amount に触れない UPSERT なので（base の sqliteOrderRepository.ts:42-49）、新しい列の値は消えない。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "機械的な部分は、形を確かめて短く済ませる",
+          "blocks": [
+            {
+              "diff": {
+                "file": "src/server.ts"
+              }
+            },
+            {
+              "p": "`routes[match[2]]` は利用者の文字列でオブジェクトを引いているように見える。しかし正規表現が checkout と cancel しか通さないので（server.ts:16）、`constructor` のような名前で引かれることはない。",
+              "basis": "fact"
+            },
+            {
+              "p": "handleCancel は handleCheckout と同じ形をしている（404 / 409 / 503、それ以外は投げて 500）。repository と fakes は列とメソッドを 1 つずつ足しただけで、既存の行の意味は変えていない。README には新しい環境変数が書き足されている（README.md:19-21）。",
+              "basis": "fact"
+            },
+            {
+              "p": "1 文で言うと：cancel() は「返金が確かに済んだときだけ CANCELLED にする」を、処理の順番と DB の CHECK で守っている。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "シニアならここで手が止まる",
+      "steps": [
+        {
+          "title": "決済中の注文を取り消したら、お金はどうなるか",
+          "question": true,
+          "blocks": [
+            {
+              "code": {
+                "file": "src/orders/orderService.ts",
+                "lines": [
+                  77,
+                  82
+                ]
+              }
+            },
+            {
+              "p": "お客様が 3000 円の注文で checkout を押した。決済サービスの応答は 10 秒で打ち切られ、画面には「決済の結果を確認しています」と出た。お客様は待ちきれずにキャンセルを押す。cancel() は 79 行の case に入り、CANCELLED を保存して 200 を返す。"
+            },
+            {
+              "p": "照合バッチが 5 分ごとに走っているので、もし課金されていても後でつじつまは合う。そう考えてよいだろうか？ 最後に、お客様の口座と DB がどうなっているかを予想してほしい。"
+            }
+          ]
+        },
+        {
+          "title": "答え：3000 円が引き落とされたまま、誰も拾わない",
+          "blocks": [
+            {
+              "pre": "t0  checkout：PENDING_PAYMENT を保存\nt1  charge() 送信 → 決済側で 3000 円の課金が成立\nt2  10 秒で打ち切り。応答は届かない\n    503 payment_pending を返す\n    状態は PENDING_PAYMENT のまま\nt3  お客様がキャンセル\n    PENDING_PAYMENT → CANCELLED\n    refund() は呼ばれない\nt4  照合バッチ：PENDING_PAYMENT だけを探す\n    → この注文はもう見つからない\n─────────────────────────────\n結果：3000 円は引き落とされ、返金は 0 円"
+            },
+            {
+              "p": "タイムアウトは「課金が済んでいるかもしれない」エラーだ（gateway.ts:55）。だから checkout は PENDING_PAYMENT のまま残し、判断を照合バッチに任せている（orderService.ts:63-64）。",
+              "basis": "fact"
+            },
+            {
+              "p": "照合バッチは PENDING_PAYMENT しか探さない（reconcilePendingPayments.ts:17-20）。CANCELLED になった注文はバッチの視界から消える。cancel() も refund() を呼ばないので、この注文のお金を戻す経路はコードのどこにもない。",
+              "basis": "fact"
+            },
+            {
+              "p": "checkout の最中にキャンセルが届いても、同じ穴に落ちる。checkout は charge() の前に PENDING_PAYMENT を保存する（46-47 行）。だから 10 秒の待ちの間に届いた cancel は CANCELLED を保存する。そのあと charge() が成功すると、checkout が PAID で上書きする（56-57、68 行）。お客様は 200 で「取り消した」と言われたのに、PAID の注文が残る。",
+              "basis": "inferred"
+            },
+            {
+              "p": "お金に関わり、お客様の操作だけで起きる。だから、マージの前に直すべき「必須」になる。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "なぜ見逃しやすいか：コメントとテストが同じ思い込みを固めている",
+          "blocks": [
+            {
+              "code": {
+                "file": "test/orderCancellation.test.ts",
+                "lines": [
+                  30,
+                  35
+                ]
+              }
+            },
+            {
+              "p": "orderService.ts:80 のコメントは、「まだ課金が確定していない」ので返金せずに取り消すと書いている。",
+              "basis": "fact"
+            },
+            {
+              "p": "「確定していない」と「課金されていない」は同じではない。PENDING_PAYMENT が確定していないのは、課金されているかもしれないからだ。コメントの前半は正しく、後半の結論がそこから出てこない。",
+              "basis": "inferred"
+            },
+            {
+              "p": "テストの 30-35 行は、この振る舞いを「決済中の注文もキャンセルできる」という名前で、正しいものとして固めている。偽の決済サービスは refund の回数しか記録しないので、「課金は済んでいた」という状況を表せない。",
+              "basis": "fact"
+            },
+            {
+              "p": "名前やコメントやテストは、書いた人（ここでは AI）の理解をそのまま写す。本体とテストが同じ思い込みから作られると、テストは緑のまま間違いを守ってしまう。名前を信じず、状態の意味を作った側まで見に行くことが、ここで効いた読み方だ。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "修正案と、それで本当に防げるか",
+          "blocks": [
+            {
+              "snippet": {
+                "label": "修正案（このリポジトリにないコード）",
+                "lang": "typescript",
+                "text": "switch (order.status) {\n  case 'CART':\n  case 'PAYMENT_FAILED':\n    // 課金の記録がない（拒否された、または照合で記録なしと確かめた）\n    order.status = 'CANCELLED';\n    break;\n  case 'PAID': { /* 今のまま */ }\n  // PENDING_PAYMENT は課金されたか分からない。照合バッチが\n  // PAID か PAYMENT_FAILED に確定させるまで待ってもらう\n  default:\n    throw new InvalidOrderStateError(order, 'cancelled');\n}"
+              }
+            },
+            {
+              "table": {
+                "head": [
+                  "場面",
+                  "修正後"
+                ],
+                "rows": [
+                  [
+                    "タイムアウトのあとにキャンセル",
+                    "409 になる。照合バッチが PAID にしたあとなら 2700 円を返金して取り消せる。課金の記録がなければ PAYMENT_FAILED になり、返金なしで取り消せる"
+                  ],
+                  [
+                    "checkout の charge() 待ちの間にキャンセル",
+                    "PENDING_PAYMENT が先に保存されているので 409 になる。PAID による上書きは起きない"
+                  ],
+                  [
+                    "テスト 30-35 行",
+                    "「決済中の注文はキャンセルできない（InvalidOrderStateError）」に書き換える"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "残る隙間は、cancel が CART を読んでから保存するまでの間に、checkout が割り込む場合だけになる。CART の分岐は外部を待たずに同期の DatabaseSync を呼ぶだけなので、1 プロセスの Node なら、ほかの要求に割り込まれずに最後まで走る見込みが高い。複数のプロセスで同じ DB を使うようになったら、`WHERE status = ?` を付けた条件付きの更新が要る。",
+              "basis": "inferred"
+            },
+            {
+              "p": "状態ごとに「どの操作を受け付けるか」を表にしておくと（状態遷移表）、PENDING_PAYMENT と cancel が交わる欄に「照合待ち」と書くことになり、この穴に気付きやすい。409 の応答に「決済を確認中です」という文言を足すと、お客様にも親切になる。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "返金がタイムアウトしたら、注文はどこに残るか",
+          "blocks": [
+            {
+              "p": "checkout は外へ送る前に PENDING_PAYMENT を保存し、照合バッチが後で確定させる。cancel() は外へ送ったあとに保存し、途中の状態を持たない。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/handlers/cancel.ts",
+                "lines": [
+                  20,
+                  27
+                ]
+              }
+            },
+            {
+              "p": "こちらのコードで決まる部分：返金のタイムアウトは PaymentTimeoutError になる（httpGateway.ts:80-82）。handleCancel はこれを、届いてもいない失敗（PaymentUnavailableError）と同じ 503「もう一度お試しください」にまとめる。注文は PAID のまま残る。PaymentGateway には返金を探す手段がなく（gateway.ts:26-31）、返金を照合するバッチもない。",
+              "basis": "fact"
+            },
+            {
+              "p": "だから、返金は決済サービスで済んだのに応答だけが届かず、お客様がやり直さなかった場合、DB は PAID で refunded_amount も空のまま残る。503 の経路はログも出さないので（server.ts:24-27 が出すのは投げられた例外だけ）、誰も気付かない。",
+              "basis": "inferred"
+            },
+            {
+              "p": "外部しだいの部分：コメントは「冪等キーは注文ごとに固定なので、二重に返金されることはない」と書く（orderService.ts:87-88）。ところが課金の冪等キーには「保持期間 24 時間」と書いてあるのに（gateway.ts:6）、返金のコメント（gateway.ts:18）には期間がない。",
+              "basis": "fact"
+            },
+            {
+              "p": "24 時間を過ぎてからやり直したら、2 回目の返金は通ってしまうのか、それとも課金額を超える返金として拒まれるのか。決済サービスの仕様を確かめるまで、コメントの「ことはない」は言い切れない。"
+            },
+            {
+              "p": "重さは「問い」。マージの前に、決済サービスのドキュメントで返金の冪等キーの保持期間を確かめる。短ければ、checkout と同じように「返金中」を先に保存して照合する設計を検討する。今の設計は状態を増やさない単純さを取り、その代わりにこの隙間を抱えている。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "手数料の設定を値で追う",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/app.ts",
+                "lines": [
+                  14,
+                  16
+                ]
+              }
+            },
+            {
+              "table": {
+                "head": [
+                  "CANCELLATION_FEE_PERCENT",
+                  "Number() の結果",
+                  "実際の手数料（3000 円の注文）"
+                ],
+                "rows": [
+                  [
+                    "未設定",
+                    "NaN",
+                    "10%（返金 2700 円）"
+                  ],
+                  [
+                    "\"0\"",
+                    "0",
+                    "10%。0 は偽なので既定値になる"
+                  ],
+                  [
+                    "\"abc\"",
+                    "NaN",
+                    "10%。黙って既定値になる"
+                  ],
+                  [
+                    "\"-10\"",
+                    "-10",
+                    "手数料 -300 円、返金 3300 円"
+                  ],
+                  [
+                    "\"150\"",
+                    "150",
+                    "返金 -1500 円"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "README は「既定は 10」と書いている（README.md:21）。`||` は 0 と未設定を区別しないので、手数料を 0% にする運用はこの 1 行のせいでできない。",
+              "basis": "fact"
+            },
+            {
+              "p": "-10 の場合は、3300 円の返金が決済サービスに送られる。受け付けられると、そのあとの save が refunded_amount の CHECK（002:10）で失敗し、お金は出たのに注文は PAID のまま 500 になる。決済サービスが受け付けるかどうかは外部しだいだ。",
+              "basis": "inferred"
+            },
+            {
+              "snippet": {
+                "label": "修正案（このリポジトリにないコード）",
+                "lang": "typescript",
+                "text": "function parseFeePercent(raw: string | undefined): number {\n  if (raw === undefined || raw === '') return 10;\n  const n = Number(raw);\n  if (!Number.isFinite(n) || n \u003c 0 || n \u003e 100) {\n    throw new Error('CANCELLATION_FEE_PERCENT must be between 0 and 100: ' + raw);\n  }\n  return n;\n}"
+              }
+            },
+            {
+              "p": "この案なら \"0\" は 0% になり、\"abc\" や \"-10\" では起動時に止まる。誤った値を本番の返金で初めて知るより、起動したときに知るほうが安い（fail fast）。値を設定するのは運営側で、お客様の操作では起きないので、重さは「提案」とする。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "そのほかの指摘と、気にしなくてよいところ",
+          "blocks": [
+            {
+              "table": {
+                "head": [
+                  "重さ",
+                  "指摘",
+                  "場所"
+                ],
+                "rows": [
+                  [
+                    "提案",
+                    "返金の 503 をログに残していない。どの注文で返金に失敗したかを後から追えない",
+                    "handlers/cancel.ts:20-27"
+                  ],
+                  [
+                    "Nit",
+                    "「円の整数どうしの計算なので端数は出ない」は、直前の切り捨てと矛盾して読める（1999 円なら 199.9 円が出る）",
+                    "orderService.ts:84"
+                  ],
+                  [
+                    "Nit",
+                    "PaymentUnavailableError の説明「課金はされていない」が、返金にも使われるようになった",
+                    "gateway.ts:44"
+                  ],
+                  [
+                    "Nit",
+                    "既定値の 10 が app.ts、OrderService の既定の引数、README の 3 か所にある",
+                    "app.ts:15、orderService.ts:31"
+                  ],
+                  [
+                    "問い",
+                    "/v1/refunds のパスと本文の形（charge、amount）が正しいか、決済サービスのドキュメントで確かめる",
+                    "httpGateway.ts:42-47"
+                  ],
+                  [
+                    "問い",
+                    "cancel にも checkout にも、注文の持ち主かを確かめる処理がない。base から同じなので、リポジトリの外（前段のプロキシなど）で守っているかを確かめる",
+                    "server.ts:15-22"
+                  ]
+                ]
+              }
+            },
+            {
+              "list": [
+                "件数：cancel は 1 件を読んで書くだけで、ループも一覧の取得もない（orderService.ts:72-104）",
+                "マイグレーションのロック：DB は SQLite の 1 ファイルで、作り直しはトランザクションの中で行う（db.ts:17-25）",
+                "routes の引き方：正規表現が 2 つの名前しか通さない（server.ts:16）",
+                "コードを戻したとき：古いコードも新しい行を読める（「マイグレーション」の手順で確かめた）"
+              ]
+            },
+            {
+              "p": "上の 4 つは、示した場所で確かめた結果、気にしなくてよいと判断した。",
+              "basis": "fact"
+            },
+            {
+              "p": "1 文で言うと：cancel() は「課金されていない」を状態の名前で判断しているが、PENDING_PAYMENT という名前が持つ「課金済みかもしれない」という意味を引き継いでいない。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "まとめ",
+      "steps": [
+        {
+          "title": "この変更はコードベースを良くしたか",
+          "blocks": [
+            {
+              "p": "欠けていた取り消しの機能を、既存の形（状態チェック、冪等キー、DB の CHECK、マイグレーションのテスト）に揃えて足している。返金と保存の順番も正しい。ただし、79 行の 1 つの case で、お客様のお金が戻らない経路を新しく作った。この case を直すまでは、全体として良くなったとは言えない。直せば良くなる。",
+              "basis": "inferred"
+            },
+            {
+              "table": {
+                "head": [
+                  "札",
+                  "シニアのコメント"
+                ],
+                "rows": [
+                  [
+                    "必須",
+                    "orderService.ts:79　PENDING_PAYMENT を取り消せる分岐から外し、409 にしてほしい。タイムアウト後の注文は課金済みかもしれず（gateway.ts:55）、CANCELLED にすると照合バッチ（reconcilePendingPayments.ts:17-20）に拾われなくなり、返金されないまま残る。テストの 30-35 行も、逆の期待に書き換える"
+                  ],
+                  [
+                    "問い",
+                    "orderService.ts:87-88　返金の冪等キーの保持期間はどれだけか。課金は 24 時間（gateway.ts:6）。それを過ぎたやり直しと、返金のタイムアウトで PAID のまま残った注文を、誰がどう見つけるか"
+                  ],
+                  [
+                    "提案",
+                    "app.ts:15　`|| 10` では 0% にできず、不正な値も黙って 10% になる。起動時に 0〜100 を検査して、外れたら止めたい"
+                  ],
+                  [
+                    "良い点",
+                    "返金してから保存する順番と、それを固定するテスト（orderCancellation.test.ts:53-60）。既存のデータで作り直しを確かめるマイグレーションのテスト（sqliteOrderRepository.test.ts:49-66）"
+                  ]
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "追体験したこと",
+          "blocks": [
+            {
+              "list": [
+                "行を読む前に「誰が何に困らなくなるか」を言葉にし、「どの状態なら課金されていないか」を確かめる対象にした",
+                "cancel() が正しいかを決めるために、状態を作る側（checkout）と読む側（照合バッチ）まで飛んだ",
+                "「課金が確定していない」というコメントと、それを固めるテストを信じず、3000 円・10 秒・5 分という具体的な値と時系列で追った",
+                "修正案が本当に防げるかを、タイムアウトの後、checkout の最中、テストの 3 つの場面で確かめ、残る隙間も言った",
+                "コードで決まる部分（503 にまとめる、返金の照合がない）と、外部しだいの部分（冪等キーの保持期間）を分け、外部しだいのほうは問いにした",
+                "良い点（順番、default の 409、DB の CHECK、マイグレーションのテスト）と、気にしなくてよいところを、確かめた場所と一緒に挙げた"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

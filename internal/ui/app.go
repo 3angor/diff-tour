@@ -317,7 +317,10 @@ func (a *App) View() tea.View {
 		header(i18n.T("gen.title", a.target.Label, a.target.Base))
 		elapsed := time.Since(a.started).Round(time.Second)
 		status := i18n.T("gen.reading", a.backend.Name(), elapsed)
-		if a.phase == "repairing" {
+		switch a.phase {
+		case "reviewing":
+			status = i18n.T("gen.reviewing", a.backend.Name(), elapsed)
+		case "repairing":
 			status = i18n.T("gen.repairing", a.repair, generate.MaxRepairs, elapsed)
 		}
 		add(text.Line{{Text: " " + spinner(elapsed) + " ", Style: "36"}, {Text: status}})

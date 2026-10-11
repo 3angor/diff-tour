@@ -47,14 +47,18 @@ type Request struct {
 // Progress is how far generation has got.
 type Progress struct {
 	Event  *Event
-	Phase  string // "reading", "repairing"
+	Phase  string // "reading", "reviewing", "repairing"
 	Repair int
 }
 
 type Stats struct {
-	CostUSD float64
-	Repairs int
+	CostUSD  float64
+	Repairs  int
+	Reviewed bool // the tour is the one corrected by the review pass
 }
+
+// ReviewStage turns on the second pass that reviews and corrects the finished tour.
+var ReviewStage = true
 
 var languageRules = map[i18n.Lang]string{
 	i18n.EN: "Write all text in English. Use short, plain sentences.",
@@ -179,29 +183,77 @@ func Generate(ctx context.Context, backend Backend, req Request, workDir string,
 			return nil, stats, err
 		}
 	}
-	for {
-		t, problems := parse(req, res.Text)
-		if len(problems) == 0 {
-			return t, stats, nil
-		}
-		if stats.Repairs >= MaxRepairs {
-			return nil, stats, &InvalidTourError{Problems: problems}
-		}
-		stats.Repairs++
-		progress(Progress{Phase: "repairing", Repair: stats.Repairs})
-		draft := extractJSON(res.Text)
-		if draft == nil {
-			draft = []byte(res.Text)
-		}
-		if err := os.WriteFile(filepath.Join(ws.Dir, "draft.txt"), draft, 0o644); err != nil {
-			return nil, stats, err
-		}
-		res, err = backend.Run(ctx, ws.Dir, repairPrompt(problems), onEvent)
-		stats.CostUSD += res.CostUSD
-		if err != nil {
+	t, err := settle(ctx, backend, req, ws.Dir, res.Text, &stats, progress, onEvent)
+	if err != nil || !ReviewStage {
+		return t, stats, err
+	}
+
+	// A second pass reads the finished tour as a reviewer would and corrects its judgments.
+	// If the reviewed tour cannot be made valid, the tour from the first pass is kept.
+	notes, _, _ := strings.Cut(res.Text, separator)
+	for name, content := range map[string]string{"draft.txt": string(mustJSON(t)), "notes.txt": notes} {
+		if err := os.WriteFile(filepath.Join(ws.Dir, name), []byte(content), 0o644); err != nil {
 			return nil, stats, err
 		}
 	}
+	progress(Progress{Phase: "reviewing"})
+	reviewed, err := backend.Run(ctx, ws.Dir, reviewPrompt(), onEvent)
+	stats.CostUSD += reviewed.CostUSD
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, stats, err
+		}
+		return t, stats, nil
+	}
+	stats.Reviewed = true
+	if rt, err := settle(ctx, backend, req, ws.Dir, reviewed.Text, &stats, progress, onEvent); err == nil {
+		return rt, stats, nil
+	} else if ctx.Err() != nil {
+		return nil, stats, err
+	}
+	stats.Reviewed = false
+	return t, stats, nil
+}
+
+// settle parses a reply and, while validation finds problems, asks for fixes (up to MaxRepairs times per reply).
+func settle(ctx context.Context, backend Backend, req Request, dir, text string, stats *Stats, progress func(Progress), onEvent func(Event)) (*tour.Tour, error) {
+	for repairs := 0; ; repairs++ {
+		t, problems := parse(req, text)
+		if len(problems) == 0 {
+			return t, nil
+		}
+		if repairs >= MaxRepairs {
+			return nil, &InvalidTourError{Problems: problems}
+		}
+		stats.Repairs++
+		progress(Progress{Phase: "repairing", Repair: repairs + 1})
+		draft := extractJSON(text)
+		if draft == nil {
+			draft = []byte(text)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "draft.txt"), draft, 0o644); err != nil {
+			return nil, err
+		}
+		res, err := backend.Run(ctx, dir, repairPrompt(problems), onEvent)
+		stats.CostUSD += res.CostUSD
+		if err != nil {
+			return nil, err
+		}
+		text = res.Text
+	}
+}
+
+func mustJSON(t *tour.Tour) []byte {
+	b, err := json.MarshalIndent(t, "", "  ")
+	if err != nil {
+		panic(err) // a tour that was just decoded from JSON always encodes again
+	}
+	return b
+}
+
+// reviewPrompt asks for the finished tour (in draft.txt) to be checked and corrected as a reviewer would.
+func reviewPrompt() string {
+	return strings.Join([]string{readPrompt("review.md"), readPrompt("format.md"), readPrompt("review-output.md")}, "\n\n")
 }
 
 // InvalidTourError reports that format or reference errors remained even after asking for fixes.
