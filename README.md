@@ -47,6 +47,8 @@ AI can write code that works. It does not teach you *why* the code is written th
 - **How they judge.** Which findings must be fixed and which are only suggestions or nits, what looks risky but is fine and why, what is done well, and whether the change makes the codebase better overall.
 - **Where they stop and say "wait".** These come as questions, so you can predict the answer before you see it.
 
+This view comes from what experienced engineers have written down about reading and reviewing code, collected in [`internal/generate/lessons`](internal/generate/lessons) (in Japanese). The LLM reads it before every tour.
+
 The tour is written by an LLM you already use: Claude Code, Codex CLI or Gemini CLI. `tour` is read-only. It never changes your files or your repository.
 
 ## How it works
@@ -58,6 +60,7 @@ The tour is written by an LLM you already use: Claude Code, Codex CLI or Gemini 
  git archive <head>  ──────────────────▶  head/          files after the change
  git diff            ──────────────────▶  change.diff
  git log             ──────────────────▶  commits.txt
+ (built into tour)   ──────────────────▶  lessons/       what senior engineers have learned
                                                  │
                                                  ▼
                       Claude Code / Codex / Gemini, started in that directory
@@ -272,7 +275,7 @@ If the file on disk differs from the commit being toured, `tour` opens a read-on
 ## FAQ
 
 **How much does a tour cost?**
-It runs on your own Claude Code, Codex or Gemini plan. With Claude Code, one tour of a change of about 250 lines used the equivalent of $0.50 to $1.00 at API prices. Opening a saved tour again costs nothing.
+It runs on your own Claude Code, Codex or Gemini plan. With Claude Code, one tour of a change of about 250 lines used the equivalent of $1.00 to $1.50 at API prices. Opening a saved tour again costs nothing.
 
 **Why does it take minutes?**
 Before writing, the LLM reads the files around the change, not only the diff. That reading is what lets the tour explain code that did not change.

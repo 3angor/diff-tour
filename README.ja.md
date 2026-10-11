@@ -47,6 +47,8 @@ AI に頼めば、動くコードはできます。でも、なぜそう書い�
 - **どう判断するか**：どれが直すべきもので、どれが提案や細かい指摘か。危なそうに見えるが問題ないのはどこで、なぜか。良くできているのはどこか。全体として、コードベースを良くしたか。
 - **どこで「待てよ」と手を止めるか**：問いとして出すので、答えを見る前に自分で考えられます。
 
+この見方は、経験を積んだエンジニアがコードの読み方やレビューについて書き残してきたことを、[`internal/generate/lessons`](internal/generate/lessons) にまとめたものに基づきます。LLM はツアーを書くたびに、これを読みます。
+
 ツアーを書くのは、ふだん使っている LLM（Claude Code、Codex CLI、Gemini CLI）です。`tour` は読み取り専用で、ファイルもリポジトリも書き換えません。
 
 ## 仕組み
@@ -58,6 +60,7 @@ AI に頼めば、動くコードはできます。でも、なぜそう書い�
  git archive <head>  ──────────────────▶  head/          files after the change
  git diff            ──────────────────▶  change.diff
  git log             ──────────────────▶  commits.txt
+ (built into tour)   ──────────────────▶  lessons/       what senior engineers have learned
                                                  │
                                                  ▼
                       Claude Code / Codex / Gemini, started in that directory
@@ -272,7 +275,7 @@ export TOUR_EDITOR='code -g {file}:{line}'
 ## よくある質問
 
 **1 回にいくらかかりますか？**
-あなたの Claude Code、Codex、Gemini のプランの中で動きます。Claude Code で約 250 行の変更をツアーにしたときは、API の料金に換算して 1 回 $0.50〜$1.00 ほどでした。保存したツアーを開き直すのには、費用はかかりません。
+あなたの Claude Code、Codex、Gemini のプランの中で動きます。Claude Code で約 250 行の変更をツアーにしたときは、API の料金に換算して 1 回 $1.00〜$1.50 ほどでした。保存したツアーを開き直すのには、費用はかかりません。
 
 **なぜ数分もかかるのですか？**
 LLM は書き始める前に、差分だけでなく、変更のまわりのファイルも読みます。その下調べがあるから、変更していないコードまで説明できます。

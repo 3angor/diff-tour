@@ -31,7 +31,9 @@ Sleep 250ms
 Right
 Sleep 3s
 Right
-Sleep 3s
+Sleep 250ms
+Right
+Sleep 250ms
 Right
 Sleep 3.5s
 Right
