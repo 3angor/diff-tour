@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,8 +25,14 @@ import (
 //go:embed prompts/*.md
 var prompts embed.FS
 
+// lessons is the reference the prompts point the LLM to: what senior engineers have learned
+// about reading, questioning and judging a change. It is copied into the workspace as lessons/.
+//
+//go:embed lessons/*.md
+var lessons embed.FS
+
 // PromptVersion must be bumped whenever the prompts change, so saved tours get regenerated.
-const PromptVersion = "v2"
+const PromptVersion = "v3"
 
 // MaxRepairs is the maximum number of times the LLM is asked to fix errors found by validation.
 const MaxRepairs = 2
@@ -115,6 +122,14 @@ func parse(req Request, text string) (*tour.Tour, []string) {
 	return &t, render.Check(render.Ctx{Tour: &t, Repo: req.Repo})
 }
 
+func writeLessons(dir string) error {
+	sub, err := fs.Sub(lessons, "lessons")
+	if err != nil {
+		return err
+	}
+	return os.CopyFS(filepath.Join(dir, "lessons"), sub)
+}
+
 func readPrompt(name string) string {
 	b, err := prompts.ReadFile("prompts/" + name)
 	if err != nil {
@@ -141,6 +156,9 @@ func Generate(ctx context.Context, backend Backend, req Request, workDir string,
 		return nil, stats, err
 	}
 	defer ws.Remove()
+	if err := writeLessons(ws.Dir); err != nil {
+		return nil, stats, err
+	}
 
 	prompt, err := buildPrompt(req)
 	if err != nil {

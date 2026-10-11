@@ -1,0 +1,478 @@
+{
+  "version": 1,
+  "title": "決済サービスが落ちたら、すぐやり直させてよいか：「課金されていない」を誰が保証しているか",
+  "base": "main",
+  "head": "feature/payment-outage-status",
+  "chapters": [
+    {
+      "title": "対象",
+      "steps": [
+        {
+          "title": "3 つのコミットと、その主張",
+          "blocks": [
+            {
+              "target": true
+            },
+            {
+              "quote": "When the payment service answers with 5xx/429 or cannot be reached, the charge was never made, so there is nothing for the reconciliation job to find. Leaving the order in PENDING_PAYMENT only blocked the customer from retrying for 10+ minutes. Mark it PAYMENT_FAILED instead; a retry reuses the same idempotency key, so it cannot double charge."
+            },
+            {
+              "p": "本体は 99e23e4 の orderService の数行。f3d6695 は応答の形を変え、ab6ceaf はゲートウェイのテストを足している。どのコミットも Claude との共同作業になっている。",
+              "basis": "fact"
+            },
+            {
+              "p": "コミットメッセージは「the charge was never made」と言い切っている。この 1 文が正しいかどうかで、変更全体の安全性が決まる。このツアーでは、この文を信じずに確かめる。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "何のための変更か",
+      "steps": [
+        {
+          "title": "誰が何に困らなくなるか",
+          "blocks": [
+            {
+              "p": "コードを読む前に、顧客から見た振る舞いを並べる。決済サービスが 5xx・429 を返すか、つながらなかったとき、変更前は注文が「決済中」のまま残った。顧客は照合バッチが片付けるまで、もう一度確定できなかった。",
+              "basis": "fact"
+            },
+            {
+              "table": {
+                "head": [
+                  "決済サービスの結果",
+                  "変更前（注文 / 応答）",
+                  "変更後（注文 / 応答）"
+                ],
+                "rows": [
+                  [
+                    "402 カード拒否",
+                    "PAYMENT_FAILED / 402",
+                    "変わらない"
+                  ],
+                  [
+                    "5xx・429・接続失敗",
+                    "PENDING_PAYMENT / 503 payment_pending",
+                    "PAYMENT_FAILED / 503 payment_unavailable, retryable: true"
+                  ],
+                  [
+                    "タイムアウト",
+                    "PENDING_PAYMENT / 503 payment_pending",
+                    "変わらない（retryable: false が付く）"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "仮説: 決済サービスが落ちている間に来た顧客が、10 分以上待たされずにすぐやり直せるようになる。クライアントはエラーコードで分岐しなくても `retryable` を見ればよくなる。",
+              "basis": "inferred"
+            },
+            {
+              "p": "この仮説には前提が 1 つある。表の 2 行目で、決済サービス側では本当に何も課金されていないこと。前提が崩れると、「すぐやり直せる」は「課金されたのに失敗と表示される」に変わる。以降の章で、この前提が何に支えられているかを確かめる。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "全体の地図",
+      "steps": [
+        {
+          "title": "処理の流れと、時間を使う場所",
+          "blocks": [
+            {
+              "pre": "POST /orders/:id/checkout          server.ts\n └ handleCheckout                  handlers/checkout.ts ★応答\n    └ OrderService.checkout        orders/orderService.ts\n       1. CART か PAYMENT_FAILED か確かめる\n       2. PENDING_PAYMENT を保存（課金の前）\n       3. charge()     payment/httpGateway.ts（変更なし）\n            402              → PaymentDeclinedError\n            5xx・429・接続失敗 → PaymentUnavailableError\n            時間切れ         → PaymentTimeoutError\n       4. 失敗の種類で注文の状態を決める  ★本体\n\n5 分ごと  reconcilePendingPayments  jobs/（変更なし）\n   10 分より古い PENDING_PAYMENT を探す\n   → findCharge → PAID か PAYMENT_FAILED"
+            },
+            {
+              "p": "差分は 5 ファイル。そのうち 3 つはテストで、頭を使うのは orderService の catch の 3 行（head `orderService.ts:52-57`）だけになる。handler の分割は、その 3 行の結果を応答に写しているだけなので、短く済ませる。",
+              "basis": "fact"
+            },
+            {
+              "p": "代わりに、変更していない 3 か所に時間を使う。`payment/gateway.ts`（エラーの意味を定義している）、`httpGateway.ts`（HTTP の status をエラーに対応させている）、照合バッチ（変更前の安全網）。差分の 3 行が正しいかは、この 3 か所を見ないと決まらない。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "変更前の「10 分以上」はどこから来るか",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "lines": [
+                  17,
+                  20
+                ],
+                "show": [
+                  5,
+                  33
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "code": {
+                "file": "src/server.ts",
+                "lines": [
+                  23,
+                  25
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "照合バッチは 5 分ごとに動き、更新から 10 分たった `PENDING_PAYMENT` だけを拾う。そのため 5xx で残った注文は、10〜15 分たたないと `PAYMENT_FAILED` に戻らない。コミットメッセージの「10+ minutes」はここから来ている。",
+              "basis": "fact"
+            },
+            {
+              "p": "照合バッチは `findCharge` で決済サービスの記録を確かめ、課金があれば `PAID` にする（22-27 行）。変更前の 5xx の注文は、課金されていてもいなくても、ここで正しい状態に収まっていた。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "仕組み",
+      "steps": [
+        {
+          "title": "本体の 3 行",
+          "blocks": [
+            {
+              "diff": {
+                "file": "src/orders/orderService.ts",
+                "hunks": [
+                  1
+                ]
+              }
+            },
+            {
+              "p": "`PaymentUnavailableError` をカードの拒否と同じ扱いにして、`PAYMENT_FAILED` を保存してから投げ直す。タイムアウトは前と同じで `PENDING_PAYMENT` のまま残る。",
+              "basis": "fact"
+            },
+            {
+              "p": "新しいコメントは、安全だと言える根拠を 2 つ挙げている。「payment/gateway.ts のとおり課金はされていない」と「冪等キーが同じなので二重には課金されない」。2 つ目の、やり直しが同じキーを使うことは、`paymentKeyFor` が注文 ID だけから作る（`order.ts:17-19`）ので確かに成り立つ。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "「5xx のとき課金されていない」と、このリポジトリのどこが言っているか",
+          "question": true,
+          "blocks": [
+            {
+              "p": "新しいコメントは「payment/gateway.ts のとおり」と書いている。では変更前（base）のリポジトリで、決済サービスの障害（5xx）のときに課金されたかどうかを書いた場所はいくつあり、それぞれ何と言っているか。"
+            },
+            {
+              "p": "ヒント: 差分に出てくるファイルだけでなく、差分で消された行も読む。"
+            }
+          ]
+        },
+        {
+          "title": "答え：2 か所あり、互いに逆のことを言っていた",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/payment/gateway.ts",
+                "lines": [
+                  31,
+                  31
+                ],
+                "show": [
+                  30,
+                  43
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "code": {
+                "file": "src/orders/orderService.ts",
+                "at": "base",
+                "lines": [
+                  56,
+                  57
+                ],
+                "show": [
+                  51,
+                  58
+                ]
+              }
+            },
+            {
+              "p": "`gateway.ts:31` は「課金はされていない」と言い切る。一方、base の `orderService.ts:56` は「決済サービスの障害やタイムアウトでは、課金されたかどうかがここでは分からない」と書き、それに沿って動いていた。この変更は、2 つのうち gateway.ts のほうを採り、もう片方の行を書き換えて食い違いを消した。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/payment/httpGateway.ts",
+                "lines": [
+                  32,
+                  34
+                ],
+                "show": [
+                  28,
+                  37
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "さらに `httpGateway.ts:32` は 500 以上をすべて同じエラーにしている。500・502・504 も、「処理を始める前に断る」意味の 429・503 と区別されない。",
+              "basis": "fact"
+            },
+            {
+              "p": "どちらのコメントが正しいかは、決済サービスの仕様で決まる。このリポジトリの中には決め手がない。一般に、500 は処理の途中や課金の確定後にも返りうる。前に立つプロキシが返す 502・504 は、奥で処理が終わっているかどうかを知らない。",
+              "basis": "opinion"
+            },
+            {
+              "p": "名前やコメントは「課金されていない」と約束するが、そう約束しているのは型のコメント 1 行だけだった。変更前のコードは、その約束に頼らない側に倒していた。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "応答の分割とテストは、良くできている",
+          "blocks": [
+            {
+              "diff": {
+                "file": "src/handlers/checkout.ts"
+              }
+            },
+            {
+              "p": "変更前は、やり直してよい失敗と注文履歴を見るべき失敗が、同じ `payment_pending` だった。分けたうえで `retryable` を付けたので、クライアントがエラーコードの一覧を持たなくてよくなる。この方向は良い。",
+              "basis": "opinion"
+            },
+            {
+              "code": {
+                "file": "test/httpGateway.test.ts",
+                "lines": [
+                  34,
+                  44
+                ],
+                "show": [
+                  34,
+                  54
+                ]
+              }
+            },
+            {
+              "p": "ゲートウェイのテストは `fetch` を mock せず、ポート 0 で本物の HTTP サーバーを立てている。status の対応も接続の失敗も、本物の `fetch` の振る舞いで確かめている。base にはこの対応のテストがなかったので、はっきり良くなった。",
+              "basis": "fact"
+            },
+            {
+              "p": "ただし、このテストが固定しているのは「500 なら `PaymentUnavailableError`」という**こちらの対応**であって、「500 なら課金されていない」という決済サービスの事実ではない。",
+              "basis": "inferred"
+            },
+            {
+              "p": "1 文で言うと: この部分は「決済サービスが応答できなければ課金はされていない」という前提に立ち、その前提のもとで注文を即座にやり直せる状態に戻し、それをクライアントに伝える。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "シニアならここで手が止まる",
+      "steps": [
+        {
+          "title": "課金は済んでいたのに 500 が返った",
+          "question": true,
+          "blocks": [
+            {
+              "p": "注文 o1（3,000 円）を確定した。決済サービスは課金を確定させたあと、応答を返す途中で失敗し、500 を返した。画面のメッセージを見た顧客は、やり直さずにサイトを離れた。"
+            },
+            {
+              "p": "1 時間後、この注文はどの状態にあり、顧客の口座からはいくら引かれているか。変更前（base）と変更後（head）で、それぞれ答えてほしい。「冪等キーがあるから二重課金にはならない」は、この問いの答えになっているだろうか。"
+            }
+          ]
+        },
+        {
+          "title": "答え：変更後は、課金済みの注文が PAYMENT_FAILED のまま誰にも見つからない",
+          "blocks": [
+            {
+              "pre": "時刻   変更前（base）              変更後（head）\n00:00  PENDING_PAYMENT を保存      PENDING_PAYMENT を保存\n00:00  決済側で課金が確定し、500 が返る（どちらも同じ）\n00:00  PENDING_PAYMENT のまま      PAYMENT_FAILED を保存\n       「注文履歴をご確認」        「もう一度お試しください」\n       顧客は離れる                顧客は離れる\n00:15  照合バッチが findCharge     照合バッチは PENDING だけ\n       → 課金あり → PAID          → この注文は見ない\n01:00  PAID・3,000 円              PAYMENT_FAILED・3,000 円"
+            },
+            {
+              "p": "変更前は、照合バッチが `findCharge` で課金を見つけて `PAID` に直していた。変更後の `PAYMENT_FAILED` は照合バッチの対象外（`reconcilePendingPayments.ts:17-20`）なので、注文は課金済みのまま失敗と表示され続ける。",
+              "basis": "fact"
+            },
+            {
+              "p": "冪等キーが守るのは、顧客が**やり直したとき**だけ。やり直さなかった顧客は守られない。やり直した場合でも、`gateway.ts:6` のとおりキーの保持期間が 24 時間なら、翌々日のやり直しは新しい課金になりうる。",
+              "basis": "inferred"
+            },
+            {
+              "p": "しかもこの状態は誰も気付けない。503 を返す経路にはログがなく（`server.ts:17-19` は例外のときしかログを出さない）、気付くのは顧客の問い合わせになる。変更を戻しても、すでに `PAYMENT_FAILED` になった注文は直らない。",
+              "basis": "fact"
+            },
+            {
+              "p": "変更前のコードが残していた「分からないものは決済中のまま、照合バッチに任せる」は、まさにこの場合のための安全網だった。消されたもの（ここでは書き換えられたコメントと分岐）が何を守っていたかを問うことを、Chesterton の柵と呼ぶ。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "重さと、直し方を本当に確かめる",
+          "blocks": [
+            {
+              "p": "重さは「問い（答えが出るまでマージしない）」。正否は、決済サービスが 500・502・504 で何を保証しているかで決まり、このリポジトリからは決められない。一方で、外れたときに失われるのは顧客のお金で、戻しても直らない。そのため、仕様の確認を先に求める。",
+              "basis": "opinion"
+            },
+            {
+              "snippet": {
+                "label": "このリポジトリにないコード（修正案の骨組み。どの status が「受け付ける前に断った」かは決済サービスの仕様で確かめる）",
+                "lang": "typescript",
+                "text": "// payment/gateway.ts\n/** 処理の途中で失敗した（500・502・504 など）。課金が済んでいる可能性がある */\nexport class PaymentOutcomeUnknownError extends Error { /* status を持つ */ }\n\n// payment/httpGateway.ts\nif (res.status === 429 || res.status === 503) {\n  throw new PaymentUnavailableError(res.status); // 受け付ける前に断った\n}\nif (res.status \u003e= 500) {\n  throw new PaymentOutcomeUnknownError(res.status);\n}\n// orderService と handler は OutcomeUnknown をタイムアウトと同じ扱いにする"
+              }
+            },
+            {
+              "table": {
+                "head": [
+                  "場合",
+                  "この案での結果"
+                ],
+                "rows": [
+                  [
+                    "504（奥では課金済み）",
+                    "PENDING のまま → 照合バッチで PAID。防げる"
+                  ],
+                  [
+                    "503（課金なし）",
+                    "PAYMENT_FAILED → すぐやり直せる。今回の狙いは残る"
+                  ],
+                  [
+                    "500（課金なし）",
+                    "10〜15 分待つ。元の不便はこの場合だけ残る"
+                  ],
+                  [
+                    "503 なのに課金済み（仕様違反）",
+                    "防げない"
+                  ],
+                  [
+                    "送信後に接続が切れた（status 0）",
+                    "防げない。`httpGateway.ts:67` の主張も確かめる"
+                  ],
+                  [
+                    "orderService だけ直した場合",
+                    "handler は retryable: true を返し続け、再送は 409 になる"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "最後の行が大事。「Unavailable なら課金なし」という知識は、いま orderService（`orderService.ts:54`）と handler（`checkout.ts:24-25`）の 2 か所に書かれている。だから、判断は gateway の層でエラーの型として 1 か所に置き、上の 2 つは型を見るだけにする。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "ほかに見つけたこと（短く）",
+          "blocks": [
+            {
+              "list": [
+                "提案（L3-8）: 503 を返す 2 つの分岐に、注文 ID と status のログを足す。5xx が本番でどれだけ起きているかを、今は誰も見られない。",
+                "問い（L2-5）: `retryable: true` を見たクライアントが自動ですぐ再送しないか。429 は「減らしてくれ」の合図なのに、同じ `retryable: true` になる。Retry-After のような待ち時間は返していない。",
+                "問い（L1-2）: `payment_pending` だけを知っている既存のクライアントは、新しい `payment_unavailable` をどう表示するか。クライアントはこのリポジトリにないので確かめられない。",
+                "提案（L7-4）: 偽の決済サービスは、エラーを投げるときに課金を記録しない（`test/fakes.ts:17-19`）。テストも「エラーなら課金なし」を前提にしているので、本番との違いをテストで捕まえられない。「課金を記録してから 500 を投げる」場合を足すと、上の問題がテストで見える。",
+                "Nit（L6-8）: handler のコメント「注文は PAYMENT_FAILED に戻してある」は、別の層の振る舞いを言い切っている。修正案のように型で表せば要らなくなる。"
+              ]
+            },
+            {
+              "code": {
+                "file": "test/fakes.ts",
+                "lines": [
+                  17,
+                  19
+                ],
+                "show": [
+                  15,
+                  21
+                ],
+                "note": "変更なし"
+              }
+            }
+          ]
+        },
+        {
+          "title": "気にしなくてよいところと、その根拠",
+          "blocks": [
+            {
+              "p": "連打による二重の確定: 課金の前に `PENDING_PAYMENT` を保存する手順は変わっていないので、2 本目は状態の確認で弾かれる。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/orders/orderService.ts",
+                "lines": [
+                  37,
+                  40
+                ],
+                "show": [
+                  31,
+                  41
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "catch の中の `save` が失敗した場合: DB のエラーが投げられ、注文は `PENDING_PAYMENT` のまま残るので、照合バッチが拾う。危ない側には倒れない（head `orderService.ts:54-57`）。",
+              "basis": "inferred"
+            },
+            {
+              "p": "DB や古いコードとの互換: 新しい状態は増えていない。`PAYMENT_FAILED` は CHECK 制約（`db/migrations/001_create_orders.sql:6`）と型（`order.ts:1`）にもともとあるので、マイグレーションは要らない。",
+              "basis": "fact"
+            },
+            {
+              "p": "テストを通すための書き換え: 既存のテストの期待値は変わっていない。タイムアウトのテスト（`test/orderService.test.ts:50-54`）も元のまま残っている。肝心の `|| e instanceof PaymentUnavailableError` を消すと、新しいテストの 40 行目が落ちる。",
+              "basis": "fact"
+            },
+            {
+              "p": "1 文で言うと: この変更は、「決済の結果が分からない注文は照合バッチが必ず片付ける」という約束から 5xx を外した。その代わりに置いたのは、決済サービスの仕様について書かれたコメント 1 行だけである。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "まとめ",
+      "steps": [
+        {
+          "title": "コードベースは良くなったか、どうコメントするか",
+          "blocks": [
+            {
+              "p": "半分は良くなった。応答の分割、`retryable`、本物の HTTP サーバーを使ったゲートウェイのテストは、今のままで価値がある。もう半分の、5xx を即座に `PAYMENT_FAILED` にする部分は、顧客のお金の安全網を、確かめていない前提と引き換えに外している。そのため今の形では通さない。",
+              "basis": "opinion"
+            },
+            {
+              "list": [
+                "問い（マージ前に答えが要る）: 決済サービスは 500・502・504 を返したとき、課金していないと文書で保証していますか。保証がない場合、課金済みなのに PAYMENT_FAILED になった注文を照合バッチが見なくなります（顧客がやり直さなければ、そのまま残ります）。",
+                "提案: 「受け付ける前に断った（429・503）」と「結果が分からない（そのほかの 5xx）」を、gateway でエラーの型として分けてはどうでしょう。orderService と handler がその型を見るようにすれば、片方だけ直してずれることがなくなります。",
+                "提案: 503 を返す分岐に、注文 ID と status のログを付けてください。",
+                "良い点: httpGateway のテストが fetch を mock せず、ローカルに本物のサーバーを立てているので、status の対応がそのまま固定されています。"
+              ]
+            }
+          ]
+        },
+        {
+          "title": "追体験したこと",
+          "blocks": [
+            {
+              "list": [
+                "行を読む前に「誰が何に困らなくなるか」を言い、その仮説が何を前提にしているかを先に書き出した。",
+                "差分の 3 行が正しいかを決めるために、変更していない gateway.ts・httpGateway.ts・照合バッチへ飛んだ。",
+                "コメントが「〜のとおり課金されていない」と言っても信じず、根拠をたどった。そこには食い違う 2 つのコメントしかなかった。",
+                "「500 だが課金済み」「顧客がやり直さない」という具体的な値で、変更前と変更後を時刻の順に並べた。",
+                "冪等キーが守る範囲（やり直したときだけ、24 時間）と守らない範囲を分けた。",
+                "直し方を考えたら、片方だけ直した場合や仕様違反の場合まで値で追い、防げない場合も書いた。",
+                "外部の仕様で決まることは必須ではなく問いとして出し、気にしなくてよいところはリポジトリの場所で示した。"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

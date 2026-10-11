@@ -1,0 +1,682 @@
+{
+  "version": 1,
+  "title": "配送先の追加：型とテスト名が約束していることを、値で確かめる",
+  "base": "main",
+  "head": "feature/shipping-address",
+  "chapters": [
+    {
+      "title": "対象",
+      "steps": [
+        {
+          "title": "この変更",
+          "blocks": [
+            {
+              "target": true
+            },
+            {
+              "quote": "Require a shipping address before checkout\nChecking out an order without a shipping address now fails with 422 shipping_address_required instead of charging the customer for an order we cannot ship.\nAdd PATCH /orders/:id to set shipping details\nCustomers can set or change the shipping address and delivery note while the order is still in the cart (or after a declined payment). Only the fields present in the body are changed; an empty delivery note clears it."
+            },
+            {
+              "p": "3 つのコミットのすべてに `Co-Authored-By: Claude` が付いている。AI が書いたコードとして読む。",
+              "basis": "fact"
+            },
+            {
+              "p": "このツアーでは、コミットメッセージとコメントを「確かめる仮説」として扱う。読み終えたときに、そのうち 1 文が思わぬ意味で正しかったと分かる。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "何のための変更か",
+      "steps": [
+        {
+          "title": "利用者から見て何が変わるか",
+          "blocks": [
+            {
+              "p": "変更前の注文には、配送先を持つ場所がない。確定すると、そのまま課金まで進む。",
+              "basis": "fact"
+            },
+            {
+              "table": {
+                "head": [
+                  "場面",
+                  "変更前",
+                  "変更後（コミットの説明）"
+                ],
+                "rows": [
+                  [
+                    "配送先・メモを入れる",
+                    "手段がない",
+                    "`PATCH /orders/:id` で入れる・変える"
+                  ],
+                  [
+                    "配送先のないまま確定",
+                    "課金される",
+                    "422 `shipping_address_required`。課金しない"
+                  ],
+                  [
+                    "決済中・支払済みで変える",
+                    "—",
+                    "409 で断る"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "困らなくなるのは 2 者。届け先を入れられなかった利用者と、発送できない注文の代金だけを受け取ってしまう店。",
+              "basis": "inferred"
+            },
+            {
+              "p": "コードを読む前に、次の 2 つを仮説として立てる。以降の章で 1 つずつ確かめる。"
+            },
+            {
+              "list": [
+                "仮説 A：配送先がなければ課金されない。利用者は配送先を入れて、確定をやり直せる",
+                "仮説 B：PATCH で変わるのは、配送先と配送メモだけ"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "全体の地図",
+      "steps": [
+        {
+          "title": "処理の流れと、時間の配り方",
+          "blocks": [
+            {
+              "pre": "PATCH /orders/:id（新）\n  server.ts route → readJsonBody（16KB まで）\n  → handleUpdateOrderDetails（検証）\n  → OrderService.updateDetails（状態を確かめて書く）\n  → SqliteOrderRepository.save（全列を上書き）\n\nPOST /orders/:id/checkout（既存 + 配送先の確認）\n  → handleCheckout（例外を HTTP の応答に変える）\n  → OrderService.checkout\n      状態の確認 → PENDING_PAYMENT を保存 → 課金\n      → PAID / PAYMENT_FAILED / PENDING のまま\n\nreconcilePendingPayments（変更なし、5 分ごと）\n  10 分より古い PENDING_PAYMENT を決済サービスに照会"
+            },
+            {
+              "p": "差分は 13 ファイルある。そのうち 4 つはテスト。",
+              "basis": "fact"
+            },
+            {
+              "table": {
+                "head": [
+                  "時間を使う",
+                  "短く済ませる"
+                ],
+                "rows": [
+                  [
+                    "`orderService.ts`：checkout に足した 2 行と updateDetails",
+                    "`sqliteOrderRepository.ts`：2 列を足すだけの機械的な書き換え"
+                  ],
+                  [
+                    "`updateOrderDetails.ts` の 17〜21 行：本文を注文に渡すところ",
+                    "`order.ts` の型、`checkout.ts` の 422、README"
+                  ],
+                  [
+                    "テスト：何を証明しているか",
+                    "マイグレーション（NULL を許す列を 2 つ足すだけ）"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "時間を集める先は、お金と状態の遷移に触れる所。保存の層は、どの書き換えも同じ形かだけを確かめて先へ進む。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "変更前のコードが守っている約束",
+          "blocks": [
+            {
+              "p": "差分の行が正しいかは、状態の意味を知らないと決まらない。だから先に、変更していない checkout と照合バッチを開く。"
+            },
+            {
+              "code": {
+                "file": "src/orders/orderService.ts",
+                "at": "base",
+                "lines": [
+                  37,
+                  40
+                ],
+                "show": [
+                  37,
+                  40
+                ],
+                "note": "変更前"
+              }
+            },
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "at": "base",
+                "lines": [
+                  22,
+                  31
+                ],
+                "show": [
+                  22,
+                  31
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "table": {
+                "head": [
+                  "状態",
+                  "意味（変更前）",
+                  "動かすのは"
+                ],
+                "rows": [
+                  [
+                    "CART",
+                    "確定の前",
+                    "checkout"
+                  ],
+                  [
+                    "PENDING_PAYMENT",
+                    "課金したかもしれない",
+                    "checkout の続き、または照合バッチ"
+                  ],
+                  [
+                    "PAID",
+                    "課金が済んだ",
+                    "—"
+                  ],
+                  [
+                    "PAYMENT_FAILED",
+                    "課金されていないと分かった。やり直せる",
+                    "checkout"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "照合バッチは 5 分ごとに動く。更新から 10 分たっていない PENDING_PAYMENT には触らない（`server.ts` 23〜25 行、`reconcilePendingPayments.ts` 5〜6 行）。",
+              "basis": "fact"
+            },
+            {
+              "p": "この約束を守っているのは、アプリの手順（状態の確認）だけ。DB の CHECK が守るのは、status の値の種類と `total_amount \u003e= 0` だけ（`001_create_orders.sql` 5〜6 行）。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "仕組み",
+      "steps": [
+        {
+          "title": "配送先の検証：知らない項目を持ち込まない",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/orders/orderDetails.ts",
+                "lines": [
+                  54,
+                  64
+                ],
+                "show": [
+                  44,
+                  65
+                ]
+              }
+            },
+            {
+              "p": "`parseShippingAddress` は受け取ったオブジェクトを書き換えない。知っている 6 項目だけで、新しいオブジェクトを作って返す。テスト「知らない項目は持ち込まない」が `isAdmin` を落とすことを確かめている（`test/orderDetails.test.ts` 14〜18 行）。",
+              "basis": "fact"
+            },
+            {
+              "p": "不正な項目は、最初の 1 つで止めずに全部まとめて返す（20〜28 行のテスト）。利用者は 1 回で全部を直せる。",
+              "basis": "fact"
+            },
+            {
+              "p": "名前には形の決まりを置かず、長さだけを見ている（35 行）。郵便番号と電話番号は書き方をそろえて持ち、その形を型のコメント（`order.ts` 5、10 行）に書いている。",
+              "basis": "fact"
+            },
+            {
+              "p": "信頼の境界では、定義にないものを落とすのが基本になる。この関数はその形をとっていて、良くできている。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "保存：JSON の 1 列と、戻せること",
+          "blocks": [
+            {
+              "schema": {
+                "migrations": "db/migrations",
+                "tables": [
+                  "orders"
+                ],
+                "focus": [
+                  "orders.shipping_address",
+                  "orders.delivery_note"
+                ]
+              }
+            },
+            {
+              "p": "列は NULL を許して足すだけ。既存の行を書き換える UPDATE はない。",
+              "basis": "fact"
+            },
+            {
+              "p": "出したあとに戻す場合を考える。古い save は書く列を名前で並べている。だから、新しい列の値には触らずに残す。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/orders/sqliteOrderRepository.ts",
+                "at": "base",
+                "lines": [
+                  42,
+                  49
+                ],
+                "show": [
+                  42,
+                  49
+                ],
+                "note": "変更前の save"
+              }
+            },
+            {
+              "p": "マイグレーションは、当てたものを名前で飛ばすだけ。002 のファイルがない古い版を起動しても、止まらない（`db.ts` 12〜16 行）。",
+              "basis": "fact"
+            },
+            {
+              "p": "配送先を別々の列に持つ設計もありえた。その場合は、DB が形を守る。この変更は、コミットにある「項目ごとには検索しない」を理由に、JSON の 1 列という単純さを取った。払ったのは、読み出しで中身を確かめずに型を付けていること（`sqliteOrderRepository.ts` 23 行）。今の規模なら、妥当な取引になる。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "PATCH の流れ：本文が注文に届くまで",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/server.ts",
+                "lines": [
+                  19,
+                  24
+                ],
+                "show": [
+                  16,
+                  25
+                ]
+              }
+            },
+            {
+              "p": "本文は 16KB を超えたところで読むのをやめ、413 を返す。JSON として壊れていれば 400 を返す（37〜38 行）。補助的な口が、サーバのメモリを食い尽くさない。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/handlers/updateOrderDetails.ts",
+                "lines": [
+                  17,
+                  21
+                ],
+                "show": [
+                  12,
+                  21
+                ]
+              }
+            },
+            {
+              "p": "ハンドラは、本文に `shippingAddress` と `deliveryNote` があれば検証して置き換え、`service.updateDetails` に渡す。service の側は、状態が CART か PAYMENT_FAILED のときだけ書く（`orderService.ts` 82〜84 行）。",
+              "basis": "fact"
+            },
+            {
+              "p": "ここまでは、見慣れた形がそろっている。入口での大きさの制限、検証、状態の確認。次の手順で、具体的な値を 1 つ入れて追う。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "この PATCH で、注文の金額は変わるか",
+          "question": true,
+          "blocks": [
+            {
+              "p": "o1 は 3000 円、状態は CART の注文。そこへ、次の本文で `PATCH /orders/o1` を送る。"
+            },
+            {
+              "snippet": {
+                "label": "このリポジトリにないコード（送る要求の本文）",
+                "lang": "json",
+                "text": "{\n  \"shippingAddress\": {\n    \"name\": \"山田 花子\", \"postalCode\": \"150-0001\",\n    \"prefecture\": \"東京都\", \"line1\": \"神宮前 1-2-3\",\n    \"phone\": \"09012345678\"\n  },\n  \"totalAmount\": 1\n}"
+              }
+            },
+            {
+              "p": "`OrderDetailsChanges` の型は `shippingAddress` と `deliveryNote` しか持たない（`orderService.ts` 28〜29 行）。テストには「配送メモを変えても金額や状態は変わらない」もある。"
+            },
+            {
+              "p": "この要求のあと、DB の o1 の `total_amount` はいくつになっているか。"
+            }
+          ]
+        },
+        {
+          "title": "答え：1 円になる",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/orders/orderService.ts",
+                "lines": [
+                  86,
+                  87
+                ],
+                "show": [
+                  78,
+                  89
+                ]
+              }
+            },
+            {
+              "p": "値で追う。ハンドラ 17 行の `as OrderDetailsChanges` は、型を付けるだけで、実行時には何も取り除かない。18〜19 行が置き換えるのは、2 つのキーだけ。`totalAmount: 1` は本文に残ったまま service に届く。",
+              "basis": "inferred"
+            },
+            {
+              "p": "86 行の `Object.assign` は、本文のキーを全部 order に写す。save は `total_amount` を含む全列を書く（`sqliteOrderRepository.ts` 46〜66 行）。DB の CHECK は `\u003e= 0` なので、1 を止めない。",
+              "basis": "fact"
+            },
+            {
+              "rows": {
+                "label": "orders の o1 の行",
+                "head": [
+                  "時点",
+                  "total_amount",
+                  "status",
+                  "shipping_address"
+                ],
+                "data": [
+                  [
+                    "PATCH の前",
+                    "3000",
+                    "CART",
+                    "NULL"
+                  ],
+                  [
+                    "PATCH の後",
+                    "1",
+                    "CART",
+                    "{\"name\":\"山田 花子\",…}"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "このあと確定すると、`amount: order.totalAmount`（57 行）で 1 円の課金になる。同じ道で `\"status\": \"PAID\"` を送れば、課金せずに支払済みにできる。`\"id\": \"o2\"` を送れば、save の `ON CONFLICT (id) DO UPDATE` で、別の注文 o2 の行を o1 の中身で上書きする。",
+              "basis": "inferred"
+            },
+            {
+              "p": "仮説 B は崩れた。コミットの「Only the fields present in the body are changed」は、本文にあるキーなら何でも変わる、という意味でだけ正しい。",
+              "basis": "fact"
+            },
+            {
+              "p": "要求の中身をそのままモデルに流し込むこの形を、一括代入（mass assignment）と呼ぶ。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "直し方と、それで本当に防げるか",
+          "blocks": [
+            {
+              "snippet": {
+                "label": "このリポジトリにないコード（修正案）",
+                "lang": "typescript",
+                "text": "// handlers/updateOrderDetails.ts：本文から 2 項目だけを詰め替える\nconst src = body as Record\u003cstring, unknown\u003e;\nconst changes: OrderDetailsChanges = {};\nif ('shippingAddress' in src) changes.shippingAddress = parseShippingAddress(src.shippingAddress);\nif ('deliveryNote' in src) changes.deliveryNote = parseDeliveryNote(src.deliveryNote);\n\n// orderService.ts updateDetails：ほかの呼び出し元からも守る\nif ('shippingAddress' in changes) order.shippingAddress = changes.shippingAddress;\nif ('deliveryNote' in changes) order.deliveryNote = changes.deliveryNote;"
+              }
+            },
+            {
+              "p": "値で確かめる。`totalAmount: 1` は changes に入らず、金額は 3000 のまま残る。`deliveryNote: ''` は `{ deliveryNote: undefined }` になり、キーは残るのでメモは消える。だから既存のテスト「送られてこなかった項目は変えない」（handler テスト 25〜32 行）も通り続ける。`__proto__` のような特別なキーも、詰め替えでは読まれない。",
+              "basis": "inferred"
+            },
+            {
+              "p": "テスト「配送メモを変えても金額や状態は変わらない」（`orderService.test.ts` 63〜70 行）は、`deliveryNote` しか送っていない。名前は約束しているが、確かめてはいない。",
+              "basis": "fact"
+            },
+            {
+              "snippet": {
+                "label": "このリポジトリにないコード（足すテスト）",
+                "lang": "typescript",
+                "text": "test('配送先とメモ以外の項目は変えられない', async () =\u003e {\n  const { orders, service } = await setup();\n  await handleUpdateOrderDetails(service, 'o1', { shippingAddress: address, totalAmount: 1, status: 'PAID' });\n  const saved = await orders.get('o1');\n  assert.equal(saved?.totalAmount, 3000);\n  assert.equal(saved?.status, 'CART');\n});"
+              }
+            },
+            {
+              "p": "知らないキーを黙って捨てずに 400 で断る選択もある。信頼の境界では、そのほうが送り手の誤りに早く気付ける。こちらは必須ではなく提案になる。",
+              "basis": "opinion"
+            },
+            {
+              "p": "この章を 1 文で言うと：PATCH は「検証した配送先とメモだけを、確定前の注文に書く」と約束している。しかし今は、本文の残りも全部書く。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "シニアならここで手が止まる",
+      "steps": [
+        {
+          "title": "422 を受けた利用者が、配送先を入れて確定し直すと？",
+          "question": true,
+          "blocks": [
+            {
+              "p": "仮説 A を確かめる。o1 は配送先のない CART の注文。"
+            },
+            {
+              "list": [
+                "① 利用者が確定を押す → 422 `shipping_address_required` が返る",
+                "② 案内に従って、`PATCH /orders/o1` で正しい配送先を送る",
+                "③ もう一度、確定を押す"
+              ]
+            },
+            {
+              "p": "②と③の応答は、それぞれ何になるか。`orderService.ts` の checkout と updateDetails を、状態の値を書きながら追ってみる。"
+            }
+          ]
+        },
+        {
+          "title": "答え：10〜15 分のあいだ、どちらも 409 になる",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/orders/orderService.ts",
+                "lines": [
+                  49,
+                  53
+                ],
+                "show": [
+                  43,
+                  53
+                ]
+              }
+            },
+            {
+              "p": "配送先の確認（53 行）は、PENDING_PAYMENT を保存した後（49〜50 行）にある。①の 422 を返した時点で、o1 は PENDING_PAYMENT のまま残る。②の updateDetails（82〜84 行）も、③の checkout（43〜45 行）も、PENDING_PAYMENT を 409 で断る。",
+              "basis": "fact"
+            },
+            {
+              "pre": "t=0     ① 確定：status=PENDING_PAYMENT を保存\n          → 配送先なし → 422\nt=1分   ② PATCH → 409 invalid_order_state\nt=2分   ③ 確定  → 409 invalid_order_state\nt=10〜15分 照合バッチ：findCharge → なし\n          → status=PAYMENT_FAILED\nそのあと  ② PATCH → 200、③ 確定 → 課金へ"
+            },
+            {
+              "p": "抜け出す手段は照合バッチだけ。バッチは 10 分より古いものを 5 分ごとに見るので、10〜15 分かかる。そのあいだに、一度も試していない課金について、決済サービスへの照会が 1 回飛ぶ。",
+              "basis": "fact"
+            },
+            {
+              "p": "PENDING_PAYMENT の「課金したかもしれない」という意味が崩れる。PAYMENT_FAILED にも「配送先がなかった」が混ざる。",
+              "basis": "inferred"
+            },
+            {
+              "p": "47〜48 行のコメントは「課金の前に決済中を保存する」理由を説明している。新しい確認は、その保存と課金の間に差し込まれた。課金の直前に置くという意図は正しいが、状態を変えた後ろに入ってしまった。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "直し方：状態を変える前に確かめる",
+          "blocks": [
+            {
+              "snippet": {
+                "label": "このリポジトリにないコード（修正案）",
+                "lang": "typescript",
+                "text": "if (order.status !== 'CART' \u0026\u0026 order.status !== 'PAYMENT_FAILED') {\n  throw new InvalidOrderStateError(order);\n}\n// 配送先がないまま課金すると…。状態を変える前に確かめ、利用者がそのまま直せるようにする\nif (!order.shippingAddress) throw new ShippingAddressRequiredError(order.id);\n\norder.status = 'PENDING_PAYMENT';\nawait this.#orders.save(order);"
+              }
+            },
+            {
+              "p": "値で確かめる。配送先のない CART の o1 では、422 を返しても状態は CART のまま残る。② は 200、③ は課金へ進む。出す前に拒否で PAYMENT_FAILED になった注文も、PAYMENT_FAILED のまま残るので、PATCH で直せる（82 行が許している）。",
+              "basis": "inferred"
+            },
+            {
+              "p": "状態の確認より後に置くのには理由がある。002 は既存の行に配送先を埋めないので、出す前に PAID になった注文には配送先がない。確認を先に置くと、支払済みの注文でボタンを押し直したときに、409 ではなく 422 が返ってしまう。",
+              "basis": "fact"
+            },
+            {
+              "p": "出した直後には、既存のカートが全部配送先なしになる。今のコードのままだと、それぞれの最初の確定が全部この 10〜15 分の行き止まりを踏む。直す前に出すと、被害は利用者 1 人ではなく、出した時点のカート全部に及ぶ。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "なぜテストは気付かなかったか",
+          "blocks": [
+            {
+              "code": {
+                "file": "test/orderService.test.ts",
+                "lines": [
+                  56,
+                  60
+                ],
+                "show": [
+                  52,
+                  61
+                ]
+              }
+            },
+            {
+              "p": "checkout が例外を投げなければ catch は動かず、assert は 1 つも走らない。53 行を消すと偽の決済サービスは既定で成功する（`test/fakes.ts` 17 行）ので、このテストは通ってしまう。状態がどうなったかも確かめていない。",
+              "basis": "fact"
+            },
+            {
+              "snippet": {
+                "label": "このリポジトリにないコード（直したテスト）",
+                "lang": "typescript",
+                "text": "const { orders, payments, service } = await setup();\n// …配送先を消してから\nawait assert.rejects(service.checkout('o1'), ShippingAddressRequiredError);\nassert.equal((await orders.get('o1'))?.status, 'CART');\nassert.equal(payments.calls.length, 0);"
+              }
+            },
+            {
+              "p": "このテストなら、今のコードでは status が PENDING_PAYMENT なので落ちる。確認を消すと rejects が落ちる。どちらの壊れ方も捕まえられる。",
+              "basis": "inferred"
+            },
+            {
+              "p": "既存のテストの書き換えも疑った。変わったのは、setup の注文に配送先を足した 12 行だけで、期待値は 1 つも変わっていない。配送先がなければ、全部の確定が 422 になるので、この書き換えは必要。通すために書き換えられたものではない。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "ほかに見つけたこと（重さ付き）",
+          "blocks": [
+            {
+              "table": {
+                "head": [
+                  "重さ",
+                  "何か",
+                  "確かめた場所"
+                ],
+                "rows": [
+                  [
+                    "問い",
+                    "認可：ID を知っていれば、他人のカートの届け先を書き換えられる。認証は誰がしているか",
+                    "`server.ts` 31〜42 行は URL の ID だけで呼ぶ。リポジトリに認証の処理はない（既存の checkout も同じ）"
+                  ],
+                  [
+                    "問い",
+                    "出す順：フロントエンドは、確定の前に PATCH を送る版が先に出るか",
+                    "フロントエンドはこのリポジトリにない"
+                  ],
+                  [
+                    "問い",
+                    "全角の数字（`１５０-０００１`）は 400 になる。フロントエンドで半角にしているか",
+                    "`orderDetails.ts` 16、18 行の `\\d`"
+                  ],
+                  [
+                    "Nit",
+                    "配送メモの長さを trim の前に数えている。ほかの項目（`text()`）は trim の後に数える",
+                    "`orderDetails.ts` 69 行と 23〜24 行"
+                  ],
+                  [
+                    "Nit",
+                    "413 と invalid_json を返す経路にテストがない",
+                    "`server.ts` 37〜38 行"
+                  ],
+                  [
+                    "気にしなくてよい",
+                    "updateDetails と checkout の競合",
+                    "同期の SQLite で、get と save の間に I/O の待ちがない。決済の途中は PENDING で断られる（推測、単一プロセスが前提）"
+                  ],
+                  [
+                    "気にしなくてよい",
+                    "正規表現が CPU を食い尽くす心配",
+                    "入れ子の量指定子がなく、本文は 16KB まで"
+                  ],
+                  [
+                    "気にしなくてよい",
+                    "既存のエラーの文言",
+                    "`action` の既定値 `'checked out'` で同じ文になる（15〜16 行）"
+                  ],
+                  [
+                    "良い点",
+                    "README の更新、422 の返し方が既存のハンドラに揃っている",
+                    "README 7 行、`checkout.ts` の差分"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "この章を 1 文で言うと：新しい失敗の経路は、課金を止めるという約束は守った。しかし、状態を変えてから止めるので「直してやり直せる」は守っていない。テストはその違いを見ていない。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "まとめ",
+      "steps": [
+        {
+          "title": "この変更は、コードベースを良くしたか",
+          "blocks": [
+            {
+              "p": "方向は良い。配送先がなければ課金しないこと、境界での検証、本文の大きさの制限、戻せる列の足し方。どれも、このリポジトリの約束に沿っている。",
+              "basis": "inferred"
+            },
+            {
+              "p": "ただ、今のままだと、利用者の操作だけで金額と状態を書き換えられる。配送先のない確定は 10〜15 分の行き止まりになる。どちらも直す行は数行で済む。だから「今は止め、直せば通す」が判断になる。",
+              "basis": "opinion"
+            },
+            {
+              "list": [
+                "**必須**：`updateDetails` の `Object.assign` が本文の全部を写す。`totalAmount: 1` で 1 円の課金になる。2 項目だけを詰め替え、金額と状態が変わらないテストを足してほしい",
+                "**必須**：配送先の確認を、PENDING_PAYMENT を保存する前に移してほしい。今は 422 のあと PATCH も再確定も 409 になる。テストは `assert.rejects` と状態の確認に変えてほしい",
+                "**問い**：この口の認可はどこでしているか。フロントエンドが PATCH を送る版は先に出るか",
+                "**良い点**：`parseShippingAddress` が新しいオブジェクトを作り、不正な項目をまとめて返すのは、境界の検証として良い形"
+              ]
+            }
+          ]
+        },
+        {
+          "title": "追体験したこと",
+          "blocks": [
+            {
+              "list": [
+                "行を読む前に、何のための変更かを 2 つの仮説にし、それを値で確かめた",
+                "差分の行が正しいかを、変更していない checkout と照合バッチで決めた（状態の意味は差分の外にあった）",
+                "型の名前、テストの名前、コミットメッセージの 3 つが「安全」と言っていても、`as` と `Object.assign` は値を止めなかった",
+                "テストは「通るか」ではなく、「肝心の 1 行を壊したら落ちるか」で読んだ",
+                "修正案は、空のメモ、出す前の PAID の注文、既存のカートといった値で、本当に防げるかを確かめた",
+                "気にしなくてよいものは、確かめた場所と一緒に言った（競合、正規表現、戻せるか、既存テストの書き換え）"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

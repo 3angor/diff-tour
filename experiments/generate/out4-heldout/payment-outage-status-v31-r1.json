@@ -1,0 +1,576 @@
+{
+  "version": 1,
+  "title": "「決済サービスが落ちたらすぐやり直せる」は、照合の網を外していないか",
+  "base": "main",
+  "head": "feature/payment-outage-status",
+  "chapters": [
+    {
+      "title": "対象",
+      "steps": [
+        {
+          "title": "3 つのコミットを読む",
+          "blocks": [
+            {
+              "target": true
+            },
+            {
+              "quote": "When the payment service answers with 5xx/429 or cannot be reached, the charge was never made, so there is nothing for the reconciliation job to find. Leaving the order in PENDING_PAYMENT only blocked the customer from retrying for 10+ minutes. Mark it PAYMENT_FAILED instead; a retry reuses the same idempotency key, so it cannot double charge."
+            },
+            {
+              "p": "核になるのは 2 つめのコミットで、主張は「5xx・429・接続失敗なら課金されていない」という 1 点に乗っている。1 つめはテストの追加、3 つめは HTTP 応答の分け方で、どちらもこの主張の上に立つ。",
+              "basis": "fact"
+            },
+            {
+              "p": "シニアは、コミットメッセージの「was never made」「cannot double charge」のような断定を、確かめるべき仮説として読む。このツアーでは、この断定がどこから来ていて、どこまで本当かを追う。",
+              "basis": "opinion"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "何のための変更か",
+      "steps": [
+        {
+          "title": "困っていたのは、障害のあと 10 分以上待たされる客",
+          "blocks": [
+            {
+              "table": {
+                "head": [
+                  "決済サービスの応答",
+                  "変更前の注文",
+                  "変更後の注文",
+                  "客に見えること（変更後）"
+                ],
+                "rows": [
+                  [
+                    "成功",
+                    "PAID",
+                    "PAID",
+                    "200"
+                  ],
+                  [
+                    "402 拒否",
+                    "PAYMENT_FAILED",
+                    "PAYMENT_FAILED",
+                    "402。すぐやり直せる"
+                  ],
+                  [
+                    "5xx・429・接続失敗",
+                    "PENDING_PAYMENT（照合待ち）",
+                    "**PAYMENT_FAILED**",
+                    "503 `payment_unavailable`、retryable: true"
+                  ],
+                  [
+                    "タイムアウト",
+                    "PENDING_PAYMENT（照合待ち）",
+                    "PENDING_PAYMENT（照合待ち）",
+                    "503 `payment_pending`、retryable: false"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "変更前は、決済サービスが 503 を返すと注文は PENDING_PAYMENT に残った。照合バッチが 5 分おきに動き、10 分以上たった注文だけを拾うので、客は 10〜15 分のあいだ注文を確定し直せなかった。",
+              "basis": "fact"
+            },
+            {
+              "p": "仮説: この変更は、決済サービスが課金しなかったと分かっている失敗に限って、客をすぐやり直させるためのもの。成り立つかどうかは「分かっている」が本当に分かっているのかにかかる。以降の章で確かめる。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "全体の地図",
+      "steps": [
+        {
+          "title": "注文確定の流れと、照合バッチという網",
+          "blocks": [
+            {
+              "pre": "POST /orders/:id/checkout\n  └ handleCheckout          handlers/checkout.ts  ★変更\n     └ OrderService.checkout  orders/orderService.ts ★変更\n        1. CART/PAYMENT_FAILED か確かめる\n        2. PENDING_PAYMENT を保存\n        3. gateway.charge(冪等キー order-\u003cid\u003e)\n           └ HttpPaymentGateway  payment/httpGateway.ts\n              402      → PaymentDeclinedError\n              5xx/429  → PaymentUnavailableError\n              接続失敗 → PaymentUnavailableError(0)\n              時間切れ → PaymentTimeoutError\n        4. catch で状態を決める   ★ここが核\n\n5 分おき: reconcilePendingPayments   変更なし\n  PENDING_PAYMENT かつ 10 分以上前 だけを拾い\n  findCharge → あれば PAID / なければ FAILED"
+            },
+            {
+              "p": "照合バッチは差分に出てこない。しかし、catch で注文を PENDING_PAYMENT に残すか PAYMENT_FAILED にするかで、その注文がこの網にかかるかどうかが決まる。だから差分の外にあるこのバッチを、地図に必ず入れる。",
+              "basis": "fact"
+            },
+            {
+              "p": "時間の配分: orderService の catch の 2 行と、それが頼っている gateway.ts の注釈に一番時間を使う。handler の分岐とテストは、その結論が出てから短く見る。httpGateway のテストは、振る舞いを変えずにテストを足しただけなので、確かめるだけにする。",
+              "basis": "opinion"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "仕組み",
+      "steps": [
+        {
+          "title": "変更の核: catch の条件が 1 つ増えた",
+          "blocks": [
+            {
+              "diff": {
+                "file": "src/orders/orderService.ts",
+                "hunks": [
+                  1
+                ]
+              }
+            },
+            {
+              "p": "実際に変わったのは条件 1 つだけ。PaymentUnavailableError のときも、拒否のときと同じく PAYMENT_FAILED を保存して投げ直す。タイムアウトのときは何もせずに投げ直すので、PENDING_PAYMENT のまま残る。",
+              "basis": "fact"
+            },
+            {
+              "p": "ここで状態の意味を確かめておく。PAYMENT_FAILED の注文は確定し直せる（33 行目）。照合バッチは PAYMENT_FAILED を「課金の記録がないので、やり直しても二重課金にならない」状態として作っている（reconcilePendingPayments.ts:28）。つまり PAYMENT_FAILED は「課金がないと確かめた」という約束を持つ状態である。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "lines": [
+                  27,
+                  29
+                ],
+                "show": [
+                  22,
+                  32
+                ],
+                "note": "変更なし。PAYMENT_FAILED は、課金の記録がないことを確かめてから付けていた"
+              }
+            }
+          ]
+        },
+        {
+          "title": "根拠は gateway.ts の注釈。でも base には逆のことも書いてあった",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/payment/gateway.ts",
+                "lines": [
+                  31,
+                  31
+                ],
+                "show": [
+                  31,
+                  48
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "code": {
+                "file": "src/orders/orderService.ts",
+                "at": "base",
+                "lines": [
+                  56,
+                  57
+                ],
+                "show": [
+                  51,
+                  58
+                ],
+                "note": "変更前"
+              }
+            },
+            {
+              "p": "base のリポジトリは、2 か所で逆のことを言っていた。gateway.ts は「5xx・429・接続失敗では課金はされていない」と書いている。注文側の orderService.ts は「障害でも課金されたか分からない」と書き、照合に任せていた。",
+              "basis": "fact"
+            },
+            {
+              "p": "この変更は、この食い違いを gateway.ts 側に合わせて解いた。コメントに「payment/gateway.ts のとおり」と書いてあるのが、その跡である。",
+              "basis": "fact"
+            },
+            {
+              "p": "ジュニアは注釈を仕様として信じがちだ。しかし決済サービスがどう動くかを決めるのは外部の決済サービスで、この注釈は誰かがそう信じて書いた文にすぎない。食い違う 2 つの記述があるときは、どちらがより慎重な側か、そして間違っていたときに何を失うかで選ぶ。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "handler は 503 を 2 つに分け、retryable を付けた",
+          "blocks": [
+            {
+              "diff": {
+                "file": "src/handlers/checkout.ts"
+              }
+            },
+            {
+              "p": "良い点: これまでは、課金されていない失敗と結果が分からない失敗が、同じ `payment_pending` だった。分けたことで、クライアントはエラーコードの意味を知らなくても、`retryable` を見るだけで「確定ボタンを戻すか」を決められる。「やり直してよいか」という判断をサーバ側の 1 か所に集めた形である。",
+              "basis": "inferred"
+            },
+            {
+              "p": "ただし `retryable: true` は、orderService が PAYMENT_FAILED にしたことを前提にしている。25 行目のコメントは、handler が service の中の状態を知っていることを示す。どちらかを変えたら、もう片方も変えなければならない。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "PAYMENT_FAILED の保存そのものが DB エラーで失敗したら、注文はどうなるか？",
+          "question": true,
+          "blocks": [
+            {
+              "code": {
+                "file": "src/orders/orderService.ts",
+                "lines": [
+                  54,
+                  57
+                ],
+                "show": [
+                  51,
+                  61
+                ]
+              }
+            },
+            {
+              "p": "決済サービスが 503 を返したので、catch で PAYMENT_FAILED を保存しようとした。ところが SQLite がロックされていて、`save` が例外を投げた。このとき、注文の状態と客への応答はどうなるか。"
+            }
+          ]
+        },
+        {
+          "title": "答え: PENDING_PAYMENT に残り、照合が拾う。安全な側に倒れる",
+          "blocks": [
+            {
+              "p": "save が投げた DB エラーが元の PaymentUnavailableError に代わって外へ出る。handler はこの例外を知らないので投げ直し、server.ts が 500 を返す。注文は 40 行目で保存した PENDING_PAYMENT のまま残る。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/server.ts",
+                "lines": [
+                  17,
+                  19
+                ],
+                "show": [
+                  14,
+                  25
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "残った PENDING_PAYMENT は 10 分後に照合バッチが拾い、課金の記録がなければ PAYMENT_FAILED にする。客は 500 を受けてしばらく待たされるが、お金の整合は崩れない。課金の前に PENDING_PAYMENT を保存しておく今の設計が、途中で落ちた場合を照合に任せる形になっているからだ。",
+              "basis": "inferred"
+            },
+            {
+              "p": "一方、ログに残るのは DB エラーだけで、決済サービスが 503 だったという事実は cause にも入らない。障害の調査で手がかりが 1 つ減る。小さいことなので、指摘するなら Nit。",
+              "basis": "inferred"
+            },
+            {
+              "p": "この章のまとめ: orderService は、課金されていないと信じられる失敗を、すぐやり直せる状態に変える。handler は、その判断を `retryable` としてクライアントに約束する。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "シニアならここで手が止まる",
+      "steps": [
+        {
+          "title": "決済サービスが 500 を返したが、実は課金は済んでいた。客はやり直さずに離れた。この注文は最後にどうなるか？",
+          "question": true,
+          "blocks": [
+            {
+              "rows": {
+                "label": "状況",
+                "head": [
+                  "時刻",
+                  "できごと"
+                ],
+                "data": [
+                  [
+                    "10:00:00",
+                    "checkout。PENDING_PAYMENT を保存"
+                  ],
+                  [
+                    "10:00:01",
+                    "決済サービスは課金を記録した。そのあと応答を作る途中で落ち、500 を返す"
+                  ],
+                  [
+                    "10:00:01",
+                    "客は 503 を見て、そのまま閉じた"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "10:15 に照合バッチが動く。この注文の状態は何で、バッチはこの注文をどう扱うか。"
+            }
+          ]
+        },
+        {
+          "title": "答え: PAYMENT_FAILED のまま残る。お金は引かれ、誰も気付かない",
+          "blocks": [
+            {
+              "pre": "10:00:01  500 → Unavailable → PAYMENT_FAILED\n10:05     照合: PENDING_PAYMENT だけを探す → 対象外\n10:15     照合: 対象外\n...       ずっと対象外\n\n客: 引き落としはある。注文は「失敗」\n店: 失敗した注文として扱い、商品を送らない\n\n（変更前なら）\n10:00:01  PENDING_PAYMENT のまま\n10:15     照合: findCharge → 見つかる → PAID"
+            },
+            {
+              "code": {
+                "file": "src/jobs/reconcilePendingPayments.ts",
+                "lines": [
+                  17,
+                  20
+                ],
+                "show": [
+                  12,
+                  22
+                ],
+                "note": "変更なし。PENDING_PAYMENT しか見ない"
+              }
+            },
+            {
+              "p": "照合バッチが見るのは PENDING_PAYMENT だけなので、PAYMENT_FAILED にした時点でこの注文は網から外れる。ログも出していないので、本番で起きても誰も気付けない。",
+              "basis": "fact"
+            },
+            {
+              "p": "客がやり直した場合はどうか。24 時間以内なら同じ冪等キー `order-o1` で送るので、決済サービスは前の課金を返し、PAID になって救われる。しかし冪等キーの保持期間は 24 時間で、それを過ぎてからやり直すと二重に課金されうる。コミットメッセージの「cannot double charge」は、この 24 時間の中でしか成り立たない。",
+              "basis": "inferred"
+            },
+            {
+              "code": {
+                "file": "src/payment/gateway.ts",
+                "lines": [
+                  6,
+                  7
+                ],
+                "show": [
+                  5,
+                  8
+                ],
+                "note": "変更なし"
+              }
+            }
+          ]
+        },
+        {
+          "title": "「5xx なら課金されていない」は確かめられるか",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/payment/httpGateway.ts",
+                "lines": [
+                  32,
+                  34
+                ],
+                "show": [
+                  28,
+                  39
+                ]
+              }
+            },
+            {
+              "code": {
+                "file": "src/payment/httpGateway.ts",
+                "lines": [
+                  63,
+                  69
+                ],
+                "show": [
+                  52,
+                  70
+                ]
+              }
+            },
+            {
+              "p": "httpGateway は、500・502・503・504・429 を同じ Unavailable にまとめている。さらにタイムアウト以外の fetch の例外は、すべて status 0 の Unavailable になる。",
+              "basis": "fact"
+            },
+            {
+              "p": "500 は課金を記録したあとでも起こりうる。また、決済サービスの前にあるプロキシが返す 502・504 は、奥のサーバが処理を済ませたあとでも返る。こうした事情があるので、「どの 5xx なら課金されていないと言い切れるか」は、決済サービスの仕様書で確かめる問いになる。リクエストを送ったあとに接続が切れた場合が status 0 に入るかも、fetch の実装しだいである。どちらもこのリポジトリの外の話なので、ここでは断定しない。",
+              "basis": "opinion"
+            },
+            {
+              "p": "それでも止める理由は、損害が釣り合っていないことにある。慎重な側（PENDING に残す）が間違っていても、客が 10 分待つだけで済む。楽観的な側（FAILED にする）が間違っていると、お金が引かれたまま注文が失敗になる。そのうえ戻す手段もなく、誰も気付かない。この変更は、外部の仕様という確かめていない前提に、戻せない損害を賭けて、その損害に気付くための網まで外している。",
+              "basis": "inferred"
+            },
+            {
+              "p": "重さ: **必須**。ただし求めるのは「直せ」の 1 択ではない。決済サービスの仕様で根拠を確かめて対象を絞るか、網を残すかを選んでもらう。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "選ばなかった設計と比べる",
+          "blocks": [
+            {
+              "table": {
+                "head": [
+                  "設計",
+                  "得るもの",
+                  "払うもの・残る穴"
+                ],
+                "rows": [
+                  [
+                    "今回: Unavailable なら全部 FAILED",
+                    "すぐやり直せる。コードは 1 行",
+                    "課金済みの 5xx を取りこぼし、気付けない"
+                  ],
+                  [
+                    "A: 課金されていないと仕様で言い切れるもの（例: 429、接続拒否）だけ FAILED。500/502/504 は PENDING",
+                    "網は残る。変更は小さい",
+                    "仕様の確認が要る。500 の客は従来どおり待つ"
+                  ],
+                  [
+                    "B: 照合バッチが、直近 24h の PAYMENT_FAILED も見る。課金の記録があれば PAID に直す",
+                    "すぐやり直せて、網も残る",
+                    "照合の対象が増える。期間の下限を付けた検索が新たに要る"
+                  ],
+                  [
+                    "C: 失敗の理由を列に持ち、Unavailable の FAILED だけを照合する",
+                    "照合の件数を最小にできる",
+                    "マイグレーションと CHECK 制約の変更が要る"
+                  ]
+                ]
+              }
+            },
+            {
+              "snippet": {
+                "label": "このリポジトリにないコード（案 B のスケッチ。findByStatusUpdatedBetween は新たに作る）",
+                "lang": "typescript",
+                "text": "// 応答が返らなかった PAYMENT_FAILED でも、課金の記録があれば PAID に直す\nconst recentFailed = await orders.findByStatusUpdatedBetween(\n  'PAYMENT_FAILED', new Date(now.getTime() - DAY_MS), now);\nfor (const order of recentFailed) {\n  const charge = await payments.findCharge(paymentKeyFor(order));\n  if (!charge) continue; // 記録がなければ書かない（やり直しの途中かもしれない）\n  order.status = 'PAID';\n  order.chargeId = charge.chargeId;\n  await orders.save(order);\n}"
+              }
+            },
+            {
+              "p": "B を具体的な値で追った。例: 10:00 の 500 で、実は課金済み。10:05 に照合バッチが findCharge を呼ぶと ch_x が見つかり、PAID になる。PAID は確定し直せないので、24 時間を過ぎてからの二重課金も防げる。",
+              "basis": "inferred"
+            },
+            {
+              "p": "照合バッチとやり直しが同時に走る場合も追った。照合バッチが FAILED の注文を読んだ直後に、客がやり直したとする。やり直しは同じキーで ch_x を受けて PAID になり、照合バッチも ch_x で PAID を書くので、結果は一致する。課金の記録が見つからないときは書かないので、やり直しの途中にある PENDING_PAYMENT を FAILED で上書きすることもない。",
+              "basis": "inferred"
+            },
+            {
+              "p": "B でも残る穴がある。決済サービスが落ちている間は findCharge も失敗する。今のループは 1 件の失敗でその回をまるごと中断する（server.ts:24 はログに出すだけ）。だから、障害が 24 時間を超えて続くと、照合が間に合わずに穴が残る。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "テストは何を証明しているか",
+          "blocks": [
+            {
+              "code": {
+                "file": "test/orderService.test.ts",
+                "lines": [
+                  37,
+                  48
+                ]
+              }
+            },
+            {
+              "code": {
+                "file": "test/fakes.ts",
+                "lines": [
+                  15,
+                  21
+                ],
+                "note": "変更なし"
+              }
+            },
+            {
+              "p": "肝心の `|| e instanceof PaymentUnavailableError` を消すと、この新しいテストは 40 行目で落ちる。変更の意図は、テストで押さえられている。",
+              "basis": "fact"
+            },
+            {
+              "p": "一方、偽の決済サービス（fake）は、冪等キーを見ずに呼ばれた回数から chargeId を作る。また「500 を投げたが課金は記録した」状態も作れない。だから、このテストが証明しているのは「同じキーで送った」ところまでである。二重課金しないことも、課金済みの 5xx を取りこぼさないことも証明していない。これらを守るのは、外部のサービスの実装と照合バッチだからだ。",
+              "basis": "fact"
+            },
+            {
+              "p": "httpGateway のテストを新しく足したのは良い点。ローカルにサーバを立てて、応答の種類ごとにどの例外になるかを固定している。ただし status 0 のテストが作るのは「誰も待ち受けていないポートに送る」場合だけで、送ったあとに切れる場合は試していない（test/httpGateway.test.ts:46-54）。",
+              "basis": "fact"
+            },
+            {
+              "p": "提案: 案 B を入れるなら、fake の `charges` に先に記録を入れてから Unavailable を投げるテストを足す。照合で PAID に戻ることを確かめられる。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "ほかに短く挙げるもの",
+          "blocks": [
+            {
+              "table": {
+                "head": [
+                  "重さ",
+                  "指摘"
+                ],
+                "rows": [
+                  [
+                    "問い",
+                    "5xx のときの error コードが `payment_pending` から `payment_unavailable` に変わった。前者で分岐しているクライアントはいないか（リポジトリの中にはクライアントがない）"
+                  ],
+                  [
+                    "提案",
+                    "retryable: true を見て自動でやり直すクライアントが多いと、回復しかけた決済サービスに要求が押し寄せる。`Retry-After` を付けるか、「やり直すのは人の操作だけ」と決めておく"
+                  ],
+                  [
+                    "Nit",
+                    "checkout.ts:25 のコメントが service の中の状態を書いている。「service が PAYMENT_FAILED にする」と出どころを添える"
+                  ],
+                  [
+                    "Nit",
+                    "test/checkoutHandler.test.ts:9 の引数名 `step` は配列を受け取っている。`steps` が中身に合う"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "気にしなくてよいもの: 新旧のコードが同時に動く入れ替えの途中は問題にならない。状態の種類もスキーマも変わっておらず、古いコードも PAYMENT_FAILED を確定し直せる。",
+              "basis": "fact"
+            },
+            {
+              "p": "気にしなくてよいもの: タイムアウトの経路は、HTTP の応答に retryable: false が足されただけで、注文の扱いは変わっていない。ボタンの連打は、既存の状態チェックと固定の冪等キーで守られており、この変更では触っていない。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "まとめ",
+      "steps": [
+        {
+          "title": "良くしたか、そしてどうコメントするか",
+          "blocks": [
+            {
+              "p": "全体として: handler の分割とテストの追加は、コードベースを確かに良くしている。しかし orderService の 1 行は、10 分待たされるという小さく戻せる不便を、取りこぼしという大きく戻せない損害に置き換えうる。このままでは通さない。直すのは 1 点で済む。",
+              "basis": "opinion"
+            },
+            {
+              "table": {
+                "head": [
+                  "札",
+                  "コメント"
+                ],
+                "rows": [
+                  [
+                    "必須",
+                    "Unavailable を PAYMENT_FAILED にすると、課金済みの 5xx が照合から外れて、誰も気付けない。決済サービスの仕様で、どのステータスなら課金されていないかを確かめて対象を絞る（案 A）か、照合に PAYMENT_FAILED も見させる（案 B）か、どちらかを入れてほしい"
+                  ],
+                  [
+                    "問い",
+                    "`payment_pending` に頼っているクライアントはいるか。retryable: true を見て自動でやり直す想定か"
+                  ],
+                  [
+                    "良い点",
+                    "503 を retryable で分けたので、クライアントがエラーコードの意味を知らなくてよくなった。httpGateway のテストで、どの応答をどの例外にするかが固定された"
+                  ]
+                ]
+              }
+            },
+            {
+              "list": [
+                "何を守るための変更かを言葉にしてから、行を読んだ",
+                "差分に出てこない照合バッチを見に行き、状態が持つ「意味」を確かめた",
+                "食い違う 2 つの注釈のうち、どちらに合わせたかを見抜いた",
+                "「500 だが課金済み」という具体的な値で、注文が網から外れる道を追った",
+                "確かめられない外部の仕様は断定しなかった。そのうえで、損害の釣り合いから重さを決めた",
+                "修正案を、照合バッチとやり直しの競合や長い障害まで追い、残る穴を書いた"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

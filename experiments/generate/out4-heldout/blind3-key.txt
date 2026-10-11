@@ -1,0 +1,8 @@
+shipping-address A shipping-address-v4-r2
+shipping-address B shipping-address-v31-r1
+shipping-address C shipping-address-v31-r2
+shipping-address D shipping-address-v4-r1
+payment-outage-status A payment-outage-status-v4-r2
+payment-outage-status B payment-outage-status-v4-r1
+payment-outage-status C payment-outage-status-v31-r2
+payment-outage-status D payment-outage-status-v31-r1

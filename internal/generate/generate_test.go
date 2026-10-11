@@ -1,6 +1,9 @@
 package generate
 
 import (
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -49,6 +52,23 @@ func TestBuildPrompt(t *testing.T) {
 		}
 		if !strings.Contains(p, "`feature/x`") {
 			t.Errorf("%s: target missing", lang)
+		}
+	}
+}
+
+func TestWriteLessons(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeLessons(dir); err != nil {
+		t.Fatal(err)
+	}
+	// Every lesson file the prompts name must be in the workspace
+	prompt, err := buildPrompt(Request{Base: "main", Head: "feature", Lang: i18n.EN})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range regexp.MustCompile("`(lessons/[^`]+\\.md)`").FindAllStringSubmatch(prompt, -1) {
+		if _, err := os.Stat(filepath.Join(dir, m[1])); err != nil {
+			t.Errorf("prompt names %s, which is not in the workspace", m[1])
 		}
 	}
 }
