@@ -27,3 +27,32 @@ func TestParseDiff(t *testing.T) {
 		t.Errorf("second hunk = %+v", hunks[1].Lines)
 	}
 }
+
+func TestParseFileStats(t *testing.T) {
+	diff := `diff --git a/src/a.ts b/src/a.ts
+index 1..2 100644
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1,2 +1,3 @@
+ keep
+-old
++new
++more
+diff --git a/db/002.sql b/db/002.sql
+new file mode 100644
+--- /dev/null
++++ b/db/002.sql
+@@ -0,0 +1 @@
++CREATE TABLE x (id INTEGER);
+`
+	got := ParseFileStats(diff)
+	want := []FileStat{{File: "src/a.ts", Insertions: 2, Deletions: 1}, {File: "db/002.sql", Insertions: 1, New: true}}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("%d: got %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}

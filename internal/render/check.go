@@ -36,10 +36,29 @@ func Check(ctx Ctx) []string {
 				if s := b.Code.Show; s != nil && (s[0] < 1 || s[1] > len(src) || s[0] > s[1] || s[0] > l0 || s[1] < l1) {
 					add(n, step.Title, "code: show %d-%d must be within the file (%d lines) and contain lines %d-%d", s[0], s[1], len(src), l0, l1)
 				}
+				s0, s1 := max(1, l0-2), min(len(src), l1+2)
+				if s := b.Code.Show; s != nil {
+					s0, s1 = s[0], s[1]
+				}
+				for _, m := range b.Code.Marks {
+					if m.Line < s0 || m.Line > s1 {
+						add(n, step.Title, "code: mark on line %d is outside the lines shown (%d-%d) of %s", m.Line, s0, s1, b.Code.File)
+					}
+				}
 			case b.Diff != nil:
 				if _, msg := pickHunks(ctx, b.Diff); msg != "" {
 					hunks, _ := ctx.Repo.Diff(ctx.Tour.Base, ctx.Tour.Head, b.Diff.File)
 					add(n, step.Title, "diff: %s has %d hunks; hunks %v are invalid or the file has no changes", b.Diff.File, len(hunks), b.Diff.Hunks)
+				}
+			case b.Files != nil:
+				changed := map[string]bool{}
+				for _, f := range ctx.Repo.FileStats(ctx.Tour.Base, ctx.Tour.Head) {
+					changed[f.File] = true
+				}
+				for _, r := range b.Files.Roles {
+					if !changed[r.File] {
+						add(n, step.Title, "files: %s is not one of the changed files", r.File)
+					}
 				}
 			case b.Schema != nil:
 				before, errB := schema.Load(ctx.Repo, ctx.Ref("base"), b.Schema.Migrations)

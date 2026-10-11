@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 )
 
 // Version is the tour format version this tool can read.
@@ -34,6 +35,59 @@ type CodeRef struct {
 	// Range to display. Defaults to 2 lines around the highlighted lines.
 	Show *[2]int `json:"show,omitempty"`
 	// A side note such as "unchanged".
+	Note string `json:"note,omitempty"`
+	// Short notes attached to single lines, drawn under them.
+	Marks []Mark `json:"marks,omitempty"`
+}
+
+// Mark is a short note attached to one line of code.
+type Mark struct {
+	Line int    `json:"line"`
+	Text string `json:"text"`
+}
+
+// Flow is a diagram of how processing flows from one place to the next, drawn by the tool.
+type Flow struct {
+	Nodes []FlowNode `json:"nodes"`
+}
+
+type FlowNode struct {
+	Label string `json:"label"`
+	// "changed", "new", "same" (default) or "external" (a database or another service).
+	Kind string `json:"kind,omitempty"`
+	// Shown beside the box.
+	Note string `json:"note,omitempty"`
+	// The label of the arrow to the next node.
+	Next string `json:"next,omitempty"`
+}
+
+// Timeline shows what happens over time on several lanes (requests, processes, the database), drawn by the tool.
+type Timeline struct {
+	Lanes  []string        `json:"lanes"`
+	Events []TimelineEvent `json:"events"`
+}
+
+type TimelineEvent struct {
+	// The lane where it happens.
+	Lane string `json:"lane"`
+	// For a message, the lane it goes to.
+	To   string `json:"to,omitempty"`
+	Text string `json:"text"`
+	// "ok", "bad" or "note".
+	Mark string `json:"mark,omitempty"`
+}
+
+// FileMap is a map of the changed files. The tool reads the files and their sizes from git;
+// Roles only says how to read them.
+type FileMap struct {
+	Roles []FileRole `json:"roles,omitempty"`
+}
+
+// FileRole says how a changed file should be read, for the file map.
+type FileRole struct {
+	File string `json:"file"`
+	// "core", "mechanical", "test", "config" or "docs".
+	Role string `json:"role"`
 	Note string `json:"note,omitempty"`
 }
 
@@ -76,29 +130,33 @@ type Table struct {
 
 // Block is one part of a step. It holds exactly one kind of item.
 type Block struct {
-	P       *string    `json:"p,omitempty"`
-	Basis   Basis      `json:"basis,omitempty"`
-	Quote   *string    `json:"quote,omitempty"`
-	List    []string   `json:"list,omitempty"`
-	Pre     *string    `json:"pre,omitempty"`
-	Table   *Table     `json:"table,omitempty"`
-	Code    *CodeRef   `json:"code,omitempty"`
-	Diff    *DiffRef   `json:"diff,omitempty"`
-	Snippet *Snippet   `json:"snippet,omitempty"`
-	Schema  *SchemaRef `json:"schema,omitempty"`
-	Rows    *Rows      `json:"rows,omitempty"`
-	Target  bool       `json:"target,omitempty"`
+	P        *string    `json:"p,omitempty"`
+	Basis    Basis      `json:"basis,omitempty"`
+	Quote    *string    `json:"quote,omitempty"`
+	List     []string   `json:"list,omitempty"`
+	Pre      *string    `json:"pre,omitempty"`
+	Table    *Table     `json:"table,omitempty"`
+	Code     *CodeRef   `json:"code,omitempty"`
+	Diff     *DiffRef   `json:"diff,omitempty"`
+	Snippet  *Snippet   `json:"snippet,omitempty"`
+	Schema   *SchemaRef `json:"schema,omitempty"`
+	Rows     *Rows      `json:"rows,omitempty"`
+	Flow     *Flow      `json:"flow,omitempty"`
+	Timeline *Timeline  `json:"timeline,omitempty"`
+	Files    *FileMap   `json:"files,omitempty"`
+	Target   bool       `json:"target,omitempty"`
 }
 
 // IsVisual reports whether the block is laid out on the left, like code or data.
 func (b Block) IsVisual() bool {
-	return b.Code != nil || b.Diff != nil || b.Snippet != nil || b.Schema != nil || b.Rows != nil
+	return b.Code != nil || b.Diff != nil || b.Snippet != nil || b.Schema != nil || b.Rows != nil ||
+		b.Flow != nil || b.Timeline != nil || b.Files != nil
 }
 
 func (b Block) kinds() int {
 	n := 0
 	for _, set := range []bool{b.P != nil, b.Quote != nil, b.List != nil, b.Pre != nil, b.Table != nil, b.Code != nil,
-		b.Diff != nil, b.Snippet != nil, b.Schema != nil, b.Rows != nil, b.Target} {
+		b.Diff != nil, b.Snippet != nil, b.Schema != nil, b.Rows != nil, b.Flow != nil, b.Timeline != nil, b.Files != nil, b.Target} {
 		if set {
 			n++
 		}
@@ -187,6 +245,60 @@ func (t *Tour) Validate() error {
 				default:
 					return fmt.Errorf("chapter %d step %d block %d: unknown basis %q", ci+1, si+1, bi+1, b.Basis)
 				}
+				if err := b.checkDiagram(); err != nil {
+					return fmt.Errorf("chapter %d step %d block %d: %w", ci+1, si+1, bi+1, err)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// MaxLanes is the most lanes a timeline can have and still fit beside the text.
+const MaxLanes = 4
+
+func oneOf(v string, allowed ...string) bool {
+	return slices.Contains(allowed, v)
+}
+
+// checkDiagram checks the shape of the blocks the tool draws.
+func (b Block) checkDiagram() error {
+	switch {
+	case b.Flow != nil:
+		if len(b.Flow.Nodes) == 0 {
+			return fmt.Errorf("flow: nodes is empty")
+		}
+		for _, n := range b.Flow.Nodes {
+			if n.Label == "" {
+				return fmt.Errorf("flow: every node needs a label")
+			}
+			if !oneOf(n.Kind, "", "same", "changed", "new", "external") {
+				return fmt.Errorf("flow: unknown kind %q (use same, changed, new or external)", n.Kind)
+			}
+		}
+	case b.Timeline != nil:
+		tl := b.Timeline
+		if len(tl.Lanes) == 0 || len(tl.Lanes) > MaxLanes {
+			return fmt.Errorf("timeline: needs 1 to %d lanes, has %d", MaxLanes, len(tl.Lanes))
+		}
+		if len(tl.Events) == 0 {
+			return fmt.Errorf("timeline: events is empty")
+		}
+		for _, e := range tl.Events {
+			if !slices.Contains(tl.Lanes, e.Lane) {
+				return fmt.Errorf("timeline: lane %q is not one of %q", e.Lane, tl.Lanes)
+			}
+			if e.To != "" && (!slices.Contains(tl.Lanes, e.To) || e.To == e.Lane) {
+				return fmt.Errorf("timeline: to %q must be another of %q", e.To, tl.Lanes)
+			}
+			if !oneOf(e.Mark, "", "ok", "bad", "note") {
+				return fmt.Errorf("timeline: unknown mark %q (use ok, bad or note)", e.Mark)
+			}
+		}
+	case b.Files != nil:
+		for _, f := range b.Files.Roles {
+			if !oneOf(f.Role, "core", "mechanical", "test", "config", "docs") {
+				return fmt.Errorf("files: unknown role %q for %s (use core, mechanical, test, config or docs)", f.Role, f.File)
 			}
 		}
 	}

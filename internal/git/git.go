@@ -333,3 +333,43 @@ func (r *Repo) Archive(ref string) (io.ReadCloser, func() error, error) {
 	}
 	return out, cmd.Wait, nil
 }
+
+// FileStat is how much one file changed.
+type FileStat struct {
+	File       string
+	Insertions int
+	Deletions  int
+	New        bool
+	Deleted    bool
+}
+
+// FileStats lists the files changed from base's fork point to head, in diff order.
+func (r *Repo) FileStats(base, head string) []FileStat {
+	return ParseFileStats(r.RawDiff(base, head))
+}
+
+// ParseFileStats counts the added and removed lines of each file in a raw diff.
+func ParseFileStats(diff string) []FileStat {
+	var out []FileStat
+	inHunk := false
+	for _, l := range strings.Split(diff, "\n") {
+		switch {
+		case strings.HasPrefix(l, "diff --git "):
+			name := l[strings.LastIndex(l, " b/")+3:]
+			out = append(out, FileStat{File: name})
+			inHunk = false
+		case len(out) == 0:
+		case strings.HasPrefix(l, "@@"):
+			inHunk = true
+		case !inHunk && strings.HasPrefix(l, "new file mode"):
+			out[len(out)-1].New = true
+		case !inHunk && strings.HasPrefix(l, "deleted file mode"):
+			out[len(out)-1].Deleted = true
+		case inHunk && strings.HasPrefix(l, "+"):
+			out[len(out)-1].Insertions++
+		case inHunk && strings.HasPrefix(l, "-"):
+			out[len(out)-1].Deletions++
+		}
+	}
+	return out
+}

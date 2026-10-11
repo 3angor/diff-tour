@@ -116,18 +116,28 @@ func Frame(ctx Ctx, steps []tour.FlatStep, index, scroll, cols, rows int, messag
 		hint = []text.Line{nil, {{Text: i18n.T("think"), Style: "2;33"}}}
 	}
 
+	// A timeline needs the full width to keep its lanes readable, so it is drawn under the columns
+	var blocks, wide []tour.Block
+	for _, b := range step.Blocks {
+		if b.Timeline != nil {
+			wide = append(wide, b)
+		} else {
+			blocks = append(blocks, b)
+		}
+	}
+
 	// Only the code block(s) at the very start (or, if none, the first code block) go on the left.
 	// Everything else goes on the right in its original order, so the flow of the explanation isn't broken
 	var visual, other []tour.Block
 	leading := 0
-	for leading < len(step.Blocks) && step.Blocks[leading].IsVisual() {
+	for leading < len(blocks) && blocks[leading].IsVisual() {
 		leading++
 	}
 	if leading > 0 {
-		visual, other = step.Blocks[:leading], step.Blocks[leading:]
+		visual, other = blocks[:leading], blocks[leading:]
 	} else {
 		taken := false
-		for _, b := range step.Blocks {
+		for _, b := range blocks {
 			if !taken && b.IsVisual() {
 				visual, taken = append(visual, b), true
 			} else {
@@ -146,7 +156,10 @@ func Frame(ctx Ctx, steps []tour.FlatStep, index, scroll, cols, rows int, messag
 		leftW := max(inner*45/100, min(natural, inner*65/100))
 		rightW := inner - leftW - 3
 		left := stack(visual, leftW, ctx)
-		right := append(stack(other, rightW, ctx), hint...)
+		right := stack(other, rightW, ctx)
+		if len(wide) == 0 {
+			right = append(right, hint...)
+		}
 		for i := range max(len(left), len(right)) {
 			var l, r text.Line
 			if i < len(left) {
@@ -158,8 +171,16 @@ func Frame(ctx Ctx, steps []tour.FlatStep, index, scroll, cols, rows int, messag
 			body = append(body, text.Concat(text.Fit(l, leftW, ""), text.Line{{Text: " │ ", Style: "90"}}, text.Fit(r, rightW, "")))
 		}
 	} else {
-		body = append(body, stack(step.Blocks, inner, ctx)...)
-		body = append(body, hint...)
+		body = append(body, stack(blocks, inner, ctx)...)
+		if len(wide) == 0 {
+			body = append(body, hint...)
+		}
+	}
+	if len(wide) > 0 {
+		if len(blocks) > 0 {
+			body = append(body, nil)
+		}
+		body = append(append(body, stack(wide, inner, ctx)...), hint...)
 	}
 
 	bodyH := max(1, rows-len(header)-2)

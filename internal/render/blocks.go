@@ -77,6 +77,20 @@ func renderCode(ref *tour.CodeRef, width int, ctx Ctx) []text.Line {
 		}
 		gutter := text.Line{{Text: fmt.Sprintf("%*d ", numW, n), Style: numStyle}, {Text: mark, Style: "33"}}
 		out = append(out, text.Fit(text.Concat(gutter, code), width, ""))
+		// Notes attached to this line go right under it, pointing up at it
+		for _, m := range ref.Marks {
+			if m.Line != n {
+				continue
+			}
+			indent := numW + 3
+			for k, l := range text.Wrap(text.ParseInline(m.Text, "93"), max(8, width-indent-3)) {
+				lead := "╰▶ "
+				if k > 0 {
+					lead = "   "
+				}
+				out = append(out, text.Concat(text.Line{{Text: strings.Repeat(" ", indent)}, {Text: lead, Style: "93"}}, l))
+			}
+		}
 	}
 	return out
 }
@@ -532,6 +546,12 @@ func Block(b tour.Block, width int, ctx Ctx) []text.Line {
 		return renderSchema(b.Schema, width, ctx)
 	case b.Rows != nil:
 		return renderRows(b.Rows, width)
+	case b.Flow != nil:
+		return renderFlow(b.Flow, width)
+	case b.Timeline != nil:
+		return renderTimeline(b.Timeline, width)
+	case b.Files != nil:
+		return renderFiles(b.Files, width, ctx)
 	case b.Target:
 		return renderTarget(width, ctx)
 	}
