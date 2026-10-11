@@ -10,7 +10,7 @@
 
 ![クーポンを足す変更を tour で読んでいるところ](demo/demo-ja.gif)
 
-<sub><a href="https://github.com/init-co-jp/diff-tour-example/tree/feature/coupons">クーポンを足すブランチ</a>のツアーです。スキーマの変更を見て、問いを考え、答えを読みます（同じクーポンを 2 回当てると、2 回分使われてしまう）。</sub>
+<sub><a href="https://github.com/init-co-jp/diff-tour-example/tree/feature/coupons">クーポンを足すブランチ</a>のツアーです。何のための変更かを確かめ、利用回数の上限をどう守っているかを見て、問いを考え、答えを読みます（同じ注文に同じクーポンを 2 回当てると、2 回分使われてしまう）。</sub>
 
 > [!NOTE]
 > diff-tour は公開したばかりです。ツアーの形式や画面は、これからも変わることがあります。

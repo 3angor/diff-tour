@@ -25,7 +25,7 @@ import (
 var prompts embed.FS
 
 // PromptVersion must be bumped whenever the prompts change, so saved tours get regenerated.
-const PromptVersion = "v1"
+const PromptVersion = "v2"
 
 // MaxRepairs is the maximum number of times the LLM is asked to fix errors found by validation.
 const MaxRepairs = 2

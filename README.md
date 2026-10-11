@@ -10,7 +10,7 @@ Walk through a diff the way a senior engineer reads it.
 
 ![tour walking through a change that adds coupons](demo/demo-en.gif)
 
-<sub>A tour of <a href="https://github.com/init-co-jp/diff-tour-example/tree/feature/coupons">a branch that adds coupons</a>: the schema change, a question to think about, and the answer: applying a coupon twice uses it up twice.</sub>
+<sub>A tour of <a href="https://github.com/init-co-jp/diff-tour-example/tree/feature/coupons">a branch that adds coupons</a>: what the change is for, how the usage limit is enforced, a question to think about, and the answer: applying a coupon twice to one order uses it up twice.</sub>
 
 > [!NOTE]
 > diff-tour is an early release. The tour format and the screens may still change.

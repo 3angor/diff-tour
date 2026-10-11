@@ -23,25 +23,23 @@ Sleep 2.5s
 Enter
 Sleep 2.5s
 Right
+Sleep 2.5s
+Right
+Sleep 3s
+Right
 Sleep 250ms
 Right
 Sleep 3s
+Right
+Sleep 250ms
+Right
+Sleep 250ms
 Right
 Sleep 3.5s
 Right
-Sleep 250ms
-Right
-Sleep 3s
+Sleep 4.5s
 Right
 Sleep 4s
-Right
-Sleep 250ms
-Right
-Sleep 250ms
-Right
-Sleep 3s
-Right
-Sleep 5s
 Sleep 500ms
 Type "q"
 Sleep 1s
