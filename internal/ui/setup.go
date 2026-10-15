@@ -33,6 +33,7 @@ func DetectLLMs() []LLMOption {
 		command("codex", "Codex CLI", "codex"),
 		command("gemini", "Gemini CLI", "gemini"),
 		openCode(),
+		command("copilot", "Copilot CLI", "copilot"),
 	}
 }
 
