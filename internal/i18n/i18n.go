@@ -12,21 +12,31 @@ type Lang string
 const (
 	EN Lang = "en"
 	JA Lang = "ja"
+	ZH Lang = "zh" // Simplified Chinese
+	// ZHHant is Traditional Chinese, worded for readers in Taiwan (Hong Kong and Macau get it too).
+	ZHHant Lang = "zh-Hant"
 )
 
 // Langs lists the supported languages. It is also the order of the choices.
-var Langs = []Lang{EN, JA}
+var Langs = []Lang{EN, JA, ZH, ZHHant}
 
 func (l Lang) Name() string {
 	switch l {
 	case JA:
 		return "日本語"
+	case ZH:
+		return "简体中文"
+	case ZHHant:
+		return "繁體中文"
 	default:
 		return "English"
 	}
 }
 
 func Parse(s string) (Lang, bool) {
+	if l, ok := chinese(s); ok {
+		return l, true
+	}
 	for _, l := range Langs {
 		if strings.EqualFold(s, string(l)) {
 			return l, true
@@ -49,7 +59,11 @@ func Detect() (Lang, string) {
 		if v == "" || v == "C" || v == "POSIX" {
 			continue
 		}
-		code := strings.ToLower(strings.SplitN(strings.SplitN(v, ".", 2)[0], "_", 2)[0])
+		locale := strings.SplitN(strings.SplitN(v, ".", 2)[0], "@", 2)[0]
+		if l, ok := chinese(locale); ok {
+			return l, key + "=" + v
+		}
+		code := strings.ToLower(strings.SplitN(locale, "_", 2)[0])
 		l, ok := Parse(code)
 		if !ok {
 			l = EN
@@ -57,6 +71,24 @@ func Detect() (Lang, string) {
 		return l, key + "=" + v
 	}
 	return EN, ""
+}
+
+// chinese reads a Chinese language tag or locale such as zh, zh-CN, zh_TW or zh-Hant-HK. Traditional script
+// (Hant) and the regions that write it (Taiwan, Hong Kong, Macau) get ZHHant, and the rest ZH.
+func chinese(s string) (Lang, bool) {
+	parts := strings.FieldsFunc(strings.ToLower(s), func(r rune) bool { return r == '-' || r == '_' })
+	if len(parts) == 0 || parts[0] != "zh" {
+		return "", false
+	}
+	for _, p := range parts[1:] {
+		switch p {
+		case "hans":
+			return ZH, true
+		case "hant", "tw", "hk", "mo":
+			return ZHHant, true
+		}
+	}
+	return ZH, true
 }
 
 // T returns the message for the current language, falling back to English if that language lacks it.
@@ -290,5 +322,211 @@ var messages = map[Lang]map[string]string{
 		"setup.none":             "使える LLM がまだありません。あとで `tour setup` で選べます。",
 		"setup.keys":             "↑↓ 選ぶ   Enter 決定   ← 戻る   q 終了",
 		"setup.saved":            "設定を %s に保存しました",
+	},
+	ZH: {
+		"key.back":               "← 返回",
+		"key.next":               "→ 下一步",
+		"key.last":               "最后一步",
+		"key.open":               "o 在编辑器中打开",
+		"key.quit":               "q 退出",
+		"scroll.more":            "▼ 更多  ↑↓",
+		"scroll.top":             "▲ ↑↓",
+		"chapter":                "第 %d 章  %s",
+		"question":               "疑问",
+		"think":                  "先想一想，再按 → 查看答案",
+		"basis.fact":             "已验证",
+		"basis.inferred":         "从代码推断",
+		"basis.opinion":          "资深视角",
+		"tag.example":            "示例",
+		"diff.summary":           "diff  +%d −%d",
+		"schema.title":           "表结构",
+		"schema.desc":            "%s 分别在 %s 和 %s 应用后的结果",
+		"schema.newTable":        "新表",
+		"change.added":           "新增",
+		"change.removed":         "删除",
+		"change.changed":         "已修改",
+		"change.same":            "未修改",
+		"schema.column":          "列",
+		"schema.type":            "类型",
+		"schema.constraints":     "约束",
+		"schema.index":           "索引",
+		"schema.unique":          "唯一索引",
+		"rows.added":             "绿色列是本次改动新增的列",
+		"target.branched":        "  （从 %s 分出）",
+		"target.summary":         "%d 个 commit · %d 个文件改动（+%d −%d）",
+		"err.fileNotFound":       "找不到文件：%s（%s）",
+		"err.lineRange":          "行号超出范围：%s L%d–%d（共 %d 行）",
+		"err.noDiff":             "找不到 diff：%s",
+		"err.noHunk":             "找不到差异块：%s %v",
+		"err.noTable":            "找不到表：%s",
+		"err.unsafeSQL":          "为安全起见未执行：%s",
+		"err.migration":          "无法应用迁移：%s（%v）",
+		"err.schema":             "无法读取表结构：%v",
+		"editor.copy":            "工作区与 %s 不同，已打开只读副本",
+		"editor.fail":            "无法启动编辑器：%v",
+		"needTTY":                "请在终端中运行 tour",
+		"picker.title":           "想查看哪项改动的导览？",
+		"picker.uncommitted":     "未提交的改动",
+		"picker.uncommittedNote": "含未提交的改动",
+		"picker.current":         "当前分支",
+		"picker.commits":         "%d 个 commit",
+		"picker.cached":          "已生成",
+		"picker.advanced":        "指定 commit 或范围：tour <ref>  /  tour <base>..<head>",
+		"picker.info":            "对比 %s · 导览由 %s 编写（用 tour setup 更改）",
+		"picker.keys":            "↑↓ 选择   Enter 开始   q 退出",
+		"picker.empty":           "没有本地分支包含 %s 中没有的 commit。",
+		"time.now":               "刚刚",
+		"time.minutes":           "%d 分钟前",
+		"time.hours":             "%d 小时前",
+		"time.days":              "%d 天前",
+		"gen.title":              "正在编写 %s 的导览（从 %s 分出）",
+		"gen.reading":            "%s 正在阅读代码（%s）",
+		"flow.changed":           "已修改",
+		"flow.new":               "新增",
+		"role.core":              "核心",
+		"role.mechanical":        "机械改动",
+		"role.test":              "测试",
+		"role.config":            "配置",
+		"role.docs":              "文档",
+		"err.noChanges":          "没有文件改动",
+		"key.ask":                "? 提问",
+		"asked":                  "你的问题",
+		"ask.title":              "询问当前步骤",
+		"ask.help":               "↑↓ 选择 · 自行输入 · Enter 提问 · Esc 关闭",
+		"ask.placeholder":        "输入问题…",
+		"ask.question":           "问：",
+		"ask.answering":          "%s 正在阅读代码以回答问题（%s）",
+		"ask.added":              "答案已加入下一步（$%.2f）",
+		"ask.notSaved":           "无法保存答案：%v",
+		"ask.failed":             "无法回答：%s",
+		"ask.canceled":           "已取消",
+		"ask.unavailable":        "提问前，请用 tour setup 选择 LLM",
+		"gen.repairing":          "正在修复导览问题（第 %d 次，共 %d 次，%s）",
+		"gen.files":              "已读文件：%d",
+		"gen.search":             "搜索：%s",
+		"gen.note":               "通常需要 2 到 5 分钟。导览会保存，下次可直接打开。",
+		"gen.keys":               "q 取消",
+		"gen.saved":              "导览已保存（按 API 价格约 $%.2f）",
+		"gen.failed":             "无法生成导览",
+		"gen.failKeys":           "q 退出",
+		"err.noLLM":              "尚未选择 LLM。请运行 tour setup 选择。",
+		"err.unsupported":        "不支持 %s。请用 tour setup 选择其他 LLM。",
+		"err.notRepo":            "不是 git 仓库：%s",
+		"err.badRef":             "未知的 commit 或分支：%s",
+		"err.noBase":             "找不到用于对比的分支（main、master 等）。请用 tour <base>..<head> 指定。",
+		"setup.welcome":          "欢迎使用 tour。开始前先做两项选择。",
+		"setup.lang":             "语言",
+		"setup.detected":         "根据 %s 检测",
+		"setup.llm":              "编写导览的 LLM",
+		"setup.found":            "已找到",
+		"setup.notFound":         "未安装",
+		"setup.needsV2":          "需要 OpenCode 2（当前安装的是 OpenCode 1）",
+		"setup.sendsCode":        "导览所用仓库的代码将发送给选中的 LLM。",
+		"setup.none":             "暂无可用的 LLM。稍后可用 `tour setup` 选择。",
+		"setup.keys":             "↑↓ 选择   Enter 确认   ← 返回   q 退出",
+		"setup.saved":            "设置已保存到 %s",
+	},
+	ZHHant: {
+		"key.back":               "← 上一步",
+		"key.next":               "→ 下一步",
+		"key.last":               "最後一步",
+		"key.open":               "o 在編輯器中開啟",
+		"key.quit":               "q 離開",
+		"scroll.more":            "▼ 還有更多  ↑↓",
+		"scroll.top":             "▲ ↑↓",
+		"chapter":                "第 %d 章  %s",
+		"question":               "思考題",
+		"think":                  "先想一想，再按 → 看答案",
+		"basis.fact":             "已確認",
+		"basis.inferred":         "從程式碼推斷",
+		"basis.opinion":          "資深觀點",
+		"tag.example":            "範例",
+		"diff.summary":           "差異  +%d −%d",
+		"schema.title":           "資料表結構",
+		"schema.desc":            "%s 分別套用到 %s 和 %s 的結果",
+		"schema.newTable":        "新資料表",
+		"change.added":           "新增",
+		"change.removed":         "刪除",
+		"change.changed":         "有變更",
+		"change.same":            "未變更",
+		"schema.column":          "欄位",
+		"schema.type":            "型別",
+		"schema.constraints":     "限制條件",
+		"schema.index":           "索引",
+		"schema.unique":          "唯一索引",
+		"rows.added":             "綠色的欄位是這次變更新增的",
+		"target.branched":        "  （從 %s 分出）",
+		"target.summary":         "%d 個 commit · %d 個檔案變更（+%d −%d）",
+		"err.fileNotFound":       "找不到檔案：%s（%s）",
+		"err.lineRange":          "行號超出範圍：%s L%d–%d（共 %d 行）",
+		"err.noDiff":             "找不到差異：%s",
+		"err.noHunk":             "找不到指定的區塊：%s %v",
+		"err.noTable":            "找不到資料表：%s",
+		"err.unsafeSQL":          "為了安全沒有執行：%s",
+		"err.migration":          "無法套用遷移：%s（%v）",
+		"err.schema":             "無法讀取資料表結構：%v",
+		"editor.copy":            "工作目錄與 %s 不同，已開啟唯讀副本",
+		"editor.fail":            "無法啟動編輯器：%v",
+		"needTTY":                "請在終端機中執行 tour",
+		"picker.title":           "要導覽哪一個變更？",
+		"picker.uncommitted":     "尚未 commit 的變更",
+		"picker.uncommittedNote": "包含尚未 commit 的變更",
+		"picker.current":         "目前的分支",
+		"picker.commits":         "%d 個 commit",
+		"picker.cached":          "已建立",
+		"picker.advanced":        "指定 commit 或範圍：tour <ref>  /  tour <base>..<head>",
+		"picker.info":            "比較對象：%s · 導覽由 %s 撰寫（可用 tour setup 變更）",
+		"picker.keys":            "↑↓ 選擇   Enter 開始   q 離開",
+		"picker.empty":           "沒有任何本機分支含有 %s 沒有的 commit。",
+		"time.now":               "剛剛",
+		"time.minutes":           "%d 分鐘前",
+		"time.hours":             "%d 小時前",
+		"time.days":              "%d 天前",
+		"gen.title":              "正在撰寫 %s 的導覽（從 %s 分出）",
+		"gen.reading":            "%s 正在閱讀程式碼（%s）",
+		"flow.changed":           "有變更",
+		"flow.new":               "新增",
+		"role.core":              "核心",
+		"role.mechanical":        "機械性",
+		"role.test":              "測試",
+		"role.config":            "設定",
+		"role.docs":              "文件",
+		"err.noChanges":          "沒有變更的檔案",
+		"key.ask":                "? 提問",
+		"asked":                  "你的問題",
+		"ask.title":              "針對這個步驟提問",
+		"ask.help":               "↑↓ 選擇 · 自行輸入 · Enter 提問 · Esc 關閉",
+		"ask.placeholder":        "輸入問題…",
+		"ask.question":           "問：",
+		"ask.answering":          "%s 正在閱讀程式碼來回答（%s）",
+		"ask.added":              "答案已加到下一步（$%.2f）",
+		"ask.notSaved":           "無法儲存答案：%v",
+		"ask.failed":             "無法回答：%s",
+		"ask.canceled":           "已取消",
+		"ask.unavailable":        "要提問，請先用 tour setup 選擇 LLM",
+		"gen.repairing":          "正在修正導覽中的問題（第 %d 次，共 %d 次，%s）",
+		"gen.files":              "已讀取的檔案：%d",
+		"gen.search":             "搜尋：%s",
+		"gen.note":               "通常需要 2 到 5 分鐘。導覽會儲存下來，下次可以直接開啟。",
+		"gen.keys":               "q 取消",
+		"gen.saved":              "導覽已儲存（以 API 價格計算約 $%.2f）",
+		"gen.failed":             "無法建立導覽",
+		"gen.failKeys":           "q 離開",
+		"err.noLLM":              "尚未選擇 LLM。請執行 tour setup 選擇。",
+		"err.unsupported":        "不支援 %s。請用 tour setup 選擇其他 LLM。",
+		"err.notRepo":            "不是 git 儲存庫：%s",
+		"err.badRef":             "找不到這個 commit 或分支：%s",
+		"err.noBase":             "找不到要比較的分支（main、master 等）。請用 tour <base>..<head> 指定。",
+		"setup.welcome":          "歡迎使用 tour。開始前只需要做兩個選擇。",
+		"setup.lang":             "顯示語言",
+		"setup.detected":         "依據 %s 判斷",
+		"setup.llm":              "撰寫導覽的 LLM",
+		"setup.found":            "已找到",
+		"setup.notFound":         "未安裝",
+		"setup.needsV2":          "需要 OpenCode 2（目前安裝的是 OpenCode 1）",
+		"setup.sendsCode":        "要導覽的儲存庫程式碼會傳送給所選的 LLM。",
+		"setup.none":             "目前沒有可用的 LLM。之後可以用 `tour setup` 選擇。",
+		"setup.keys":             "↑↓ 選擇   Enter 確定   ← 上一步   q 離開",
+		"setup.saved":            "設定已儲存到 %s",
 	},
 }
