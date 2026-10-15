@@ -1,0 +1,884 @@
+{
+  "version": 1,
+  "title": "优惠券：上限守住了“调用次数”，还是“订单数”？",
+  "base": "main",
+  "head": "feature/coupons",
+  "chapters": [
+    {
+      "title": "对象",
+      "steps": [
+        {
+          "title": "这次要读的变更",
+          "blocks": [
+            {
+              "target": true
+            },
+            {
+              "quote": "Apply coupon discounts at checkout and add a coupon API\n\nPOST /orders/:id/coupon takes a coupon code and attaches a discount to the order. Checkout charges the total minus the discount."
+            },
+            {
+              "p": "两个提交都带着 `Co-Authored-By: Claude`。也就是说，要读的是 AI 参与写的代码。",
+              "basis": "fact"
+            },
+            {
+              "p": "AI 写的代码形状往往很整齐，看起来“像对的”。所以这次不停在“看起来对”，而是用具体的值去追。",
+              "basis": "opinion"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "这个变更是为了什么",
+      "steps": [
+        {
+          "title": "谁不再为什么发愁",
+          "asks": [
+            "折扣只能是固定金额吗？能不能打几折？",
+            "优惠码是谁、用什么方式创建的？"
+          ],
+          "blocks": [
+            {
+              "p": "店铺可以发优惠码。顾客把码绑到订单上，结账时扣的是“总额减折扣”。",
+              "basis": "fact"
+            },
+            {
+              "p": "优惠码有两道限制：有效期 `expires_at`，和使用次数上限 `max_uses`。",
+              "basis": "fact"
+            },
+            {
+              "table": {
+                "head": [
+                  "请求 POST /orders/:id/coupon",
+                  "结果"
+                ],
+                "rows": [
+                  [
+                    "body 里没有 code，或为空",
+                    "400 code_required"
+                  ],
+                  [
+                    "订单不存在",
+                    "404 order_not_found"
+                  ],
+                  [
+                    "订单不在 CART / PAYMENT_FAILED",
+                    "409 invalid_order_state"
+                  ],
+                  [
+                    "码不存在",
+                    "404 coupon_not_found"
+                  ],
+                  [
+                    "码已过期",
+                    "410 coupon_expired"
+                  ],
+                  [
+                    "次数用完",
+                    "409 coupon_used_up"
+                  ],
+                  [
+                    "成功",
+                    "200 { orderId, discountAmount }"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "先立一个假设：从列名和提交说明看，`max_uses = 100` 的本意是“最多 100 个订单能享受这个折扣”。后面几章用代码来检验它。",
+              "basis": "inferred"
+            },
+            {
+              "p": "一句话：这个变更承诺，有效的优惠码能让一个订单少付一笔固定金额，而且总使用次数不超过上限。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "全局地图",
+      "steps": [
+        {
+          "title": "哪些文件要动脑，哪些只是跟着改",
+          "asks": [
+            "sqliteOrderRepository.ts 改了 20 多行，为什么算机械修改？"
+          ],
+          "blocks": [
+            {
+              "files": {
+                "roles": [
+                  {
+                    "file": "src/coupons/couponService.ts",
+                    "role": "core",
+                    "note": "apply：检查 → 消耗 → 保存"
+                  },
+                  {
+                    "file": "src/coupons/sqliteCouponRepository.ts",
+                    "role": "core",
+                    "note": "consumeUse 的那条 UPDATE"
+                  },
+                  {
+                    "file": "src/orders/orderService.ts",
+                    "role": "core",
+                    "note": "扣款金额 1 行"
+                  },
+                  {
+                    "file": "db/migrations/002_add_coupons.sql",
+                    "role": "core",
+                    "note": "新表和两列"
+                  },
+                  {
+                    "file": "src/handlers/applyCoupon.ts",
+                    "role": "mechanical",
+                    "note": "照 checkout.ts 的形状做状态码映射"
+                  },
+                  {
+                    "file": "src/server.ts",
+                    "role": "mechanical",
+                    "note": "路由 + readJson"
+                  },
+                  {
+                    "file": "src/coupons/coupon.ts",
+                    "role": "mechanical",
+                    "note": "类型和错误类"
+                  },
+                  {
+                    "file": "src/orders/order.ts",
+                    "role": "mechanical",
+                    "note": "加两个字段"
+                  },
+                  {
+                    "file": "src/orders/sqliteOrderRepository.ts",
+                    "role": "mechanical",
+                    "note": "Row、toOrder、save 各加两列"
+                  },
+                  {
+                    "file": "src/app.ts",
+                    "role": "mechanical",
+                    "note": "组装依赖"
+                  },
+                  {
+                    "file": "test/couponService.test.ts",
+                    "role": "test"
+                  },
+                  {
+                    "file": "test/orderService.test.ts",
+                    "role": "test"
+                  },
+                  {
+                    "file": "test/reconcilePendingPayments.test.ts",
+                    "role": "test",
+                    "note": "只加 discountAmount: 0"
+                  },
+                  {
+                    "file": "test/sqliteOrderRepository.test.ts",
+                    "role": "test",
+                    "note": "只加 discountAmount: 0"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "约 300 行里，要动脑的大约 40 行：`apply` 的 18 行、`consumeUse` 的 UPDATE、扣款的 1 行，以及迁移文件。",
+              "basis": "fact"
+            },
+            {
+              "p": "说它们“机械”之前先确认过：`sqliteOrderRepository.ts` 在 Row、toOrder、INSERT、UPDATE、参数这 5 处都按同样的顺序加了 `coupon_code` 和 `discount_amount`。已有的测试只加了 `discountAmount: 0`，没有改任何期望值。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "处理的流程，以及时间花在哪里",
+          "asks": [
+            "reconcile batch 为什么不用知道折扣？"
+          ],
+          "blocks": [
+            {
+              "flow": {
+                "nodes": [
+                  {
+                    "label": "POST /orders/:id/coupon",
+                    "kind": "new",
+                    "note": "server.ts",
+                    "next": "readJson(req)",
+                    "start": true
+                  },
+                  {
+                    "label": "handleApplyCoupon",
+                    "kind": "new",
+                    "note": "handlers/applyCoupon.ts",
+                    "next": "orderId, code"
+                  },
+                  {
+                    "label": "CouponService.apply",
+                    "kind": "new",
+                    "note": "检查状态、有效期、次数"
+                  },
+                  {
+                    "label": "orders / coupons 表",
+                    "kind": "external",
+                    "note": "SQLite（同步）"
+                  },
+                  {
+                    "label": "POST /orders/:id/checkout",
+                    "kind": "same",
+                    "note": "handlers/checkout.ts",
+                    "start": true
+                  },
+                  {
+                    "label": "OrderService.checkout",
+                    "kind": "changed",
+                    "note": "金额 = total − discount",
+                    "next": "charge(amount, key)"
+                  },
+                  {
+                    "label": "支付服务",
+                    "kind": "external"
+                  },
+                  {
+                    "label": "reconcilePendingPayments（每 5 分钟）",
+                    "kind": "same",
+                    "note": "只看状态和 key",
+                    "next": "findCharge(key)",
+                    "start": true
+                  },
+                  {
+                    "label": "支付服务",
+                    "kind": "external"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "照账批处理没有改。它只用 `paymentKeyFor(order)` 查扣款，再改状态，不碰金额。",
+              "basis": "fact"
+            },
+            {
+              "p": "时间会花在两处：`apply` 里“检查 → 消耗 → 保存”的顺序；还有扣款金额变了以后，支付那一侧会怎样。handler 和路由只看形状是否和 checkout 一样。",
+              "basis": "opinion"
+            },
+            {
+              "p": "这一章用一句话说：优惠券只在两个地方接入原有流程。`apply` 写订单的两列，`checkout` 读其中一列来算金额。",
+              "basis": "fact"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "机制",
+      "steps": [
+        {
+          "title": "apply 的检查顺序",
+          "asks": [
+            "为什么 PAYMENT_FAILED 的订单也能用券？"
+          ],
+          "blocks": [
+            {
+              "code": {
+                "file": "src/coupons/couponService.ts",
+                "lines": [
+                  18,
+                  35
+                ],
+                "show": [
+                  18,
+                  35
+                ],
+                "marks": [
+                  {
+                    "line": 21,
+                    "text": "和 checkout 完全相同的状态条件"
+                  },
+                  {
+                    "line": 27,
+                    "text": "过期：expiresAt <= 现在"
+                  },
+                  {
+                    "line": 28,
+                    "text": "先消耗 1 次，失败就是用完"
+                  },
+                  {
+                    "line": 32,
+                    "text": "折扣不超过订单总额"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "顺序是：订单状态 → 码存在 → 未过期 → 消耗次数 → 写回订单。消耗次数放在所有“只读检查”之后，所以过期的码不会白白扣掉次数。",
+              "basis": "fact"
+            },
+            {
+              "p": "状态条件照抄了 `orderService.ts:33`。所以 PENDING_PAYMENT 和 PAID 的订单不能再改折扣。这保证了“正在扣款的订单，金额不会被改”。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "上限靠一条 UPDATE 守住",
+          "asks": [
+            "如果把 consumeUse 写成先 get 再比较 usedCount，会差在哪？"
+          ],
+          "blocks": [
+            {
+              "code": {
+                "file": "src/coupons/sqliteCouponRepository.ts",
+                "lines": [
+                  35,
+                  40
+                ],
+                "show": [
+                  31,
+                  40
+                ],
+                "marks": [
+                  {
+                    "line": 37,
+                    "text": "判断和 +1 在同一条语句里"
+                  },
+                  {
+                    "line": 39,
+                    "text": "0 行被改 = 已到上限"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "常见的写法是先 SELECT 出 `used_count`，在 JS 里比较，再 UPDATE。那样两个请求可以都在“比较”时看到 99，然后都写成 100、101。",
+              "basis": "opinion"
+            },
+            {
+              "p": "这里把条件放进 WHERE，由 SQLite 在一条语句里完成判断和写入。注释说“并发也不会超限”，这个说法成立，而且不依赖 JS 的执行时机。",
+              "basis": "inferred"
+            },
+            {
+              "p": "`couponService.test.ts:46-51` 用 max_uses = 1 测了第二次被拒，并确认 `usedCount` 停在 1。",
+              "basis": "fact"
+            },
+            {
+              "p": "这是这次变更里做得好的地方。“先检查再写入”中间的空隙（check-then-act）被交给了数据库，而不是靠代码里的步骤。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "扣款金额，以及 Math.min 是否够用",
+          "asks": [
+            "以后加上“修改购物车”的功能，会发生什么？"
+          ],
+          "blocks": [
+            {
+              "diff": {
+                "file": "src/orders/orderService.ts",
+                "hunks": [
+                  0
+                ]
+              }
+            },
+            {
+              "p": "这一行不出现负数的前提是 discount ≤ total。`apply` 在写入时用 `Math.min` 保证了这一点。",
+              "basis": "fact"
+            },
+            {
+              "p": "那写入之后 total 还会变吗？在 `src/` 里搜了 `totalAmount` 的所有写入：只有 save 原样写回，没有任何代码改订单总额。所以目前 `Math.min` 一处就够了。",
+              "basis": "fact"
+            },
+            {
+              "p": "金额沿用整数日元，和 `001_create_orders.sql` 第 4 行注释的约定一致。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "迁移，以及外键是否真的生效",
+          "blocks": [
+            {
+              "schema": {
+                "migrations": "db/migrations",
+                "tables": [
+                  "orders",
+                  "coupons"
+                ],
+                "focus": [
+                  "orders.coupon_code",
+                  "orders.discount_amount"
+                ]
+              }
+            },
+            {
+              "code": {
+                "file": "src/db.ts",
+                "lines": [
+                  10,
+                  10
+                ],
+                "show": [
+                  8,
+                  11
+                ],
+                "note": "变更没有改这里",
+                "marks": [
+                  {
+                    "line": 10,
+                    "text": "每次打开连接都开启外键检查"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "SQLite 默认不检查外键。只写 REFERENCES 不一定会生效。",
+              "basis": "opinion"
+            },
+            {
+              "p": "这个仓库在 `db.ts:10` 打开了外键检查，所以 `orders.coupon_code` 不可能指向不存在的码。",
+              "basis": "fact"
+            },
+            {
+              "p": "`discount_amount` 带 `DEFAULT 0`，已有订单读出来就是 0，扣款金额不变。",
+              "basis": "fact"
+            },
+            {
+              "p": "如果回滚到旧代码：旧的 save 只更新它认识的列，不会清掉新列；但旧的 checkout 会按 totalAmount 全额扣款，已经用了券的订单会被多扣钱。",
+              "basis": "inferred"
+            }
+          ]
+        },
+        {
+          "title": "apply 和 checkout 同时打到同一个订单",
+          "question": true,
+          "blocks": [
+            {
+              "p": "`apply` 的流程是：读订单 → 检查 → 把整行写回。`save` 是 upsert，会连 `status` 一起覆盖。"
+            },
+            {
+              "p": "顾客点了“结账”，几乎同时又点了“使用优惠券”。`apply` 会不会先读到 CART，然后在 checkout 把订单改成 PENDING_PAYMENT 之后，又把 `status` 写回 CART？"
+            }
+          ]
+        },
+        {
+          "title": "答案：现在不会，但原因不是锁",
+          "blocks": [
+            {
+              "timeline": {
+                "lanes": [
+                  "请求 A（checkout）",
+                  "请求 B（coupon）",
+                  "DB",
+                  "支付服务"
+                ],
+                "events": [
+                  {
+                    "lane": "请求 A（checkout）",
+                    "to": "DB",
+                    "text": "get：CART"
+                  },
+                  {
+                    "lane": "请求 A（checkout）",
+                    "to": "DB",
+                    "text": "save：PENDING_PAYMENT"
+                  },
+                  {
+                    "lane": "请求 A（checkout）",
+                    "to": "支付服务",
+                    "text": "charge（真正的 I/O，在这里让出）",
+                    "mark": "note"
+                  },
+                  {
+                    "lane": "请求 B（coupon）",
+                    "to": "DB",
+                    "text": "get：PENDING_PAYMENT"
+                  },
+                  {
+                    "lane": "请求 B（coupon）",
+                    "text": "409，不消耗次数",
+                    "mark": "ok"
+                  },
+                  {
+                    "lane": "支付服务",
+                    "to": "请求 A（checkout）",
+                    "text": "chargeId"
+                  },
+                  {
+                    "lane": "请求 A（checkout）",
+                    "to": "DB",
+                    "text": "save：PAID",
+                    "mark": "ok"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "两个仓库用的都是 `node:sqlite` 的 `DatabaseSync`，`prepare().get()` 和 `run()` 都是同步调用。方法虽然写成 async，里面没有真正的等待。",
+              "basis": "fact"
+            },
+            {
+              "p": "所以 `apply` 从 get 到 save 之间不会让给别的请求。唯一真正等待的地方是 checkout 调支付服务，而那时 DB 里已经是 PENDING_PAYMENT。",
+              "basis": "inferred"
+            },
+            {
+              "p": "这是靠“同步 DB”这个实现细节，而不是靠锁或条件更新。checkout 原来防双击（`orderService.ts:37-39` 的注释）也靠同一个前提，所以没有比原来更差。",
+              "basis": "inferred"
+            },
+            {
+              "p": "判断：现在不用改。将来换成异步 DB 时，`apply` 和 `checkout` 都需要条件更新（`WHERE status IN (...)`）。在 PR 里提一句就够了。",
+              "basis": "opinion"
+            },
+            {
+              "p": "这一章用一句话说：次数上限由 DB 的一条语句守住，扣款金额不会小于 0，已有订单不受影响。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "资深工程师会在这里停下",
+      "steps": [
+        {
+          "title": "同一个订单提交 3 次同一张券",
+          "question": true,
+          "blocks": [
+            {
+              "p": "优惠码 SPRING：`max_uses = 100`，`used_count = 0`，折扣 500 日元。"
+            },
+            {
+              "p": "顾客对订单 o1 提交了 SPRING。响应在网络上丢了，前端又自动重试了 2 次。"
+            },
+            {
+              "p": "这 3 次之后，SPRING 的 `used_count` 是多少？o1 的 `discount_amount` 是多少？"
+            }
+          ]
+        },
+        {
+          "title": "答案：used_count 是 3，订单只有一个",
+          "asks": [
+            "前端做了防重复提交，这个问题还在吗？"
+          ],
+          "blocks": [
+            {
+              "rows": {
+                "label": "同一订单 o1 连续提交 SPRING",
+                "head": [
+                  "请求",
+                  "响应",
+                  "o1.coupon_code",
+                  "o1.discount_amount",
+                  "SPRING.used_count"
+                ],
+                "data": [
+                  [
+                    "第 1 次",
+                    "200",
+                    "SPRING",
+                    "500",
+                    "1"
+                  ],
+                  [
+                    "第 2 次",
+                    "200",
+                    "SPRING",
+                    "500",
+                    "2"
+                  ],
+                  [
+                    "第 3 次",
+                    "200",
+                    "SPRING",
+                    "500",
+                    "3"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "`couponService.ts:28` 无条件调用 `consumeUse`，前面没有看 `order.couponCode` 是不是已经是这张券。仓库里也没有任何地方把 `used_count` 减回去。",
+              "basis": "fact"
+            },
+            {
+              "p": "同样会多耗次数的还有两条路：先用 A 再换成 B，A 的次数不会还；用了券但一直不结账，次数也不会还。所以 `used_count` 的意思从“用了这张券的订单数”变成了“apply 被调用的次数”。第 2 章的假设不成立。",
+              "basis": "inferred"
+            },
+            {
+              "p": "这只靠用户自己的操作就能触发：对自己的订单循环请求 100 次，就能把一张公开的券耗光，其他顾客都会收到 `coupon_used_up`。server.ts 里没有频率限制，也没有身份校验。",
+              "basis": "inferred"
+            },
+            {
+              "code": {
+                "file": "test/couponService.test.ts",
+                "lines": [
+                  48,
+                  49
+                ],
+                "show": [
+                  46,
+                  51
+                ],
+                "marks": [
+                  {
+                    "line": 49,
+                    "text": "第二次用的是另一个订单 o2"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "上限的测试只用了两个不同的订单，所以测不到这个问题。上线后会表现为“券提前用完”，最先发现的大概是运营或投诉的顾客。重量：必须。",
+              "basis": "fact"
+            },
+            {
+              "p": "这类问题的名字是幂等性：同一个请求到达两次，结果应该和到达一次一样。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "怎么改，改了真的能防住吗",
+          "asks": [
+            "为什么不在换券时把 A 的次数退回去？"
+          ],
+          "blocks": [
+            {
+              "snippet": {
+                "label": "修正方案示意（不是这个仓库里的代码）",
+                "lang": "typescript",
+                "text": "// apply 中，状态检查之后\nif (order.couponCode === code) return order; // 同一张券重复提交：不再消耗\nif (order.couponCode !== undefined) {\n  throw new CouponAlreadyAppliedError(order.couponCode); // 换券：先拒绝\n}\n// 之后的 consumeUse 和 orders.save 放进同一个事务（BEGIN … COMMIT）"
+              }
+            },
+            {
+              "table": {
+                "head": [
+                  "情形",
+                  "修正后"
+                ],
+                "rows": [
+                  [
+                    "o1 重试 3 次",
+                    "第 2、3 次在第一行返回，used_count = 1 ✔"
+                  ],
+                  [
+                    "先 A 后 B",
+                    "409，A 的次数仍是 1，但没有白耗 ✔"
+                  ],
+                  [
+                    "consumeUse 成功后 save 抛错",
+                    "事务回滚，次数不丢 ✔（需要事务）"
+                  ],
+                  [
+                    "用了券但一直不结账",
+                    "仍然占着名额 ✘"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "最后一行，这个修正防不住。要防住它，就得改成“PAID 时才 +1”。那样 `used_count` 就等于真正付款的订单数，但要多处理一种失败：结账时券已经用完。而扣款和 +1 跨在外部服务和 DB 两边，不能放进一个事务。",
+              "basis": "inferred"
+            },
+            {
+              "p": "推荐：先做“幂等 + 拒绝换券 + 事务”，这是小改动，能堵住用户自己就能触发的路径。“放弃的购物车占名额”作为已知的取舍写进注释，由产品来决定能不能接受。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "扣款金额变了，支付服务那边怎么处理？",
+          "asks": [
+            "0 元的订单，能不能干脆不调支付服务？"
+          ],
+          "blocks": [
+            {
+              "p": "能在这个仓库里确定的部分：折扣等于总额时，扣款金额是 0。`couponService.test.ts:35-39` 测的正是这种情况（3000 的订单，折扣 3000）。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/payment/httpGateway.ts",
+                "lines": [
+                  35,
+                  37
+                ],
+                "show": [
+                  28,
+                  39
+                ],
+                "note": "变更没有改这里",
+                "marks": [
+                  {
+                    "line": 35,
+                    "text": "402、5xx、429 以外的状态都变成普通 Error"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "假如支付服务对 0 元返回 400：这里会抛出普通 Error。checkout 的 catch 只把 `PaymentDeclinedError` 改成 PAYMENT_FAILED，所以订单停在 PENDING_PAYMENT，接口返回 500。10 分钟后照账批处理查不到扣款，改成 PAYMENT_FAILED。顾客再结账，又是同样的循环，券的次数也已经用掉了。",
+              "basis": "inferred"
+            },
+            {
+              "p": "还有一条路：被拒卡后状态是 PAYMENT_FAILED，此时还能用券，再结账时金额变了，key 却还是 `order-o1`。`gateway.ts:6` 只写了“同一个 key 视为同一笔”。",
+              "basis": "fact"
+            },
+            {
+              "p": "从这里开始取决于外部：支付服务接不接受 0 元？同一个 key 换了金额，它是返回上次的结果、报错，还是按新金额扣？这些在仓库里查不到。重量：疑问。合并前请负责支付对接的人查文档；如果不接受 0 元，可以考虑在 checkout 里对 0 元直接标记 PAID。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "过期时间和折扣金额：靠代码步骤守住的约定",
+          "asks": [
+            "SQLite 的 ADD COLUMN 能加引用其他列的 CHECK 吗？"
+          ],
+          "blocks": [
+            {
+              "code": {
+                "file": "db/migrations/002_add_coupons.sql",
+                "lines": [
+                  6,
+                  10
+                ],
+                "show": [
+                  1,
+                  10
+                ],
+                "marks": [
+                  {
+                    "line": 6,
+                    "text": "TEXT，没有格式约束"
+                  },
+                  {
+                    "line": 10,
+                    "text": "没有 CHECK"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "仓库里没有创建优惠券的代码，只有测试里的 INSERT。所以券是有人用 SQL 手动插进去的，`expires_at` 的格式没有人检查。",
+              "basis": "fact"
+            },
+            {
+              "p": "写错格式时，`new Date()` 会得到 Invalid Date，`Invalid Date <= now` 为 false，结果这张券永不过期，失败的时候反而放行了。不带 `Z` 的 `2026-12-31T23:59:59` 会按服务器的本地时区解释。重量：建议。可以在迁移里加格式检查，或者在 `get` 遇到 Invalid Date 时当作已过期。",
+              "basis": "inferred"
+            },
+            {
+              "p": "金额方面：`001_create_orders.sql:5` 给 `total_amount` 加了 `CHECK (>= 0)`，`sqliteOrderRepository.test.ts` 还专门测了它。新列 `discount_amount` 却没有 CHECK，“折扣在 0 和总额之间”只靠 `apply` 里的 `Math.min` 这一处步骤守住。",
+              "basis": "fact"
+            },
+            {
+              "p": "建议至少加 `CHECK (discount_amount >= 0)`，和仓库原有的做法保持一致。跨列的条件能不能写，需要实际跑一下确认。",
+              "basis": "opinion"
+            }
+          ]
+        },
+        {
+          "title": "其余发现，以及不必担心的地方",
+          "blocks": [
+            {
+              "table": {
+                "head": [
+                  "重量",
+                  "发现",
+                  "位置"
+                ],
+                "rows": [
+                  [
+                    "建议",
+                    "新的失败路径没有测试：同一订单两次 apply、状态检查（删掉也没有测试会失败）、handler 的状态码映射",
+                    "test/couponService.test.ts"
+                  ],
+                  [
+                    "建议",
+                    "body 不是合法 JSON 时 JSON.parse 抛错，返回 500 而不是 400",
+                    "src/server.ts:12"
+                  ],
+                  [
+                    "Nit",
+                    "依赖具体类 SqliteCouponRepository，订单这边用的是 OrderRepository 接口",
+                    "src/coupons/couponService.ts:8"
+                  ],
+                  [
+                    "Nit",
+                    "复用 InvalidOrderStateError，日志会写“cannot be checked out”",
+                    "src/orders/orderService.ts:16"
+                  ],
+                  [
+                    "Nit",
+                    "“可修改的状态”条件写在两处",
+                    "couponService.ts:21 / orderService.ts:33"
+                  ],
+                  [
+                    "Nit",
+                    "README 的 npm start 注释只写了 checkout 接口；应用券也没有日志",
+                    "README.md:7"
+                  ]
+                ]
+              }
+            },
+            {
+              "list": [
+                "SQL 注入：码都是绑定参数（sqliteCouponRepository.ts:20, 37）",
+                "改别人的订单 ID：仓库本来就没有认证，checkout 也一样，不是这次新加的问题（server.ts）",
+                "规模：每次请求按主键读写一两行",
+                "已有测试：只加了 discountAmount: 0，没有改任何期望值",
+                "新的 import：都在仓库内，或者是原来就在用的 node:sqlite"
+              ]
+            },
+            {
+              "p": "上面“不必担心”的每一条，都在括号里的位置确认过。",
+              "basis": "fact"
+            },
+            {
+              "p": "这一章用一句话说：上限守住的是 apply 被调用的次数，而不是用券的订单数；金额为 0 或金额改变时支付侧的行为，还没有确认。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "总结",
+      "steps": [
+        {
+          "title": "整体变好了吗，会怎么评论",
+          "blocks": [
+            {
+              "p": "结构上，这个变更放对了位置：只在两个点接入原有流程，上限交给 DB，金额沿用整数日元，外键确实生效。",
+              "basis": "fact"
+            },
+            {
+              "p": "但有一个“必须”：用户自己的操作就能让次数和订单数对不上，甚至把券耗光。修好之前不建议合并；修好之后，它会让代码库变好。",
+              "basis": "inferred"
+            },
+            {
+              "list": [
+                "【必须】apply 不是幂等的：同一订单重试、换券都会多耗 used_count，用户循环请求就能耗光公开的券。建议同码直接返回、拒绝换券，consumeUse 和 save 放进同一个事务，并补上“同一订单两次”的测试。",
+                "【疑问】折扣等于总额时会请求 0 元；PAYMENT_FAILED 后用券，会用同一个 key 请求不同的金额。支付服务怎么处理这两种请求？合并前请查支付服务的文档。",
+                "【建议】expires_at 写错格式会变成永不过期；discount_amount 没有 CHECK，和 total_amount 的做法不一致。",
+                "【优点】consumeUse 把判断和 +1 放进一条 UPDATE，注释也写清了原因，上限不会因为并发被突破。"
+              ]
+            }
+          ]
+        },
+        {
+          "title": "这次追体验了什么",
+          "blocks": [
+            {
+              "list": [
+                "读代码前先立假设（max_uses = 订单数），再用代码检验它，结果假设不成立。",
+                "跳出差分：去看 db.ts 的外键设置、httpGateway 怎么把错误分类、所有写 totalAmount 的地方。",
+                "用具体的值追：同一订单 3 次、折扣 = 总额、写错格式的日期。",
+                "判断“现在不会发生”：apply 和 checkout 的竞争靠同步 DB 避开了，说清前提，不制造问题。",
+                "把“取决于外部”的问题拆开：先确定我们这边的代码会怎么处理，再把剩下的部分作为疑问交出去。",
+                "提出修正方案后，用同一批值检验它能防住什么、防不住什么。"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

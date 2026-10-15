@@ -1,0 +1,883 @@
+{
+  "version": 1,
+  "title": "優惠券功能：名額、冪等 key 與「看起來正確」的 apply()",
+  "base": "main",
+  "head": "feature/coupons",
+  "chapters": [
+    {
+      "title": "對象",
+      "steps": [
+        {
+          "title": "這次要讀的變更",
+          "blocks": [
+            {
+              "target": true
+            },
+            {
+              "quote": "Apply coupon discounts at checkout and add a coupon API\nPOST /orders/:id/coupon takes a coupon code and attaches a discount to the order. Checkout charges the total minus the discount."
+            },
+            {
+              "p": "兩個 commit 都標了 `Co-Authored-By: Claude Opus 5.5`，這是 AI 參與撰寫的程式碼。commit 訊息只說了「做什麼」，沒說名額怎麼算、何時算。",
+              "basis": "fact"
+            },
+            {
+              "p": "AI 寫的程式碼通常結構整齊、命名合理，所以更要用具體的值去追，不能停在「看起來對」。",
+              "basis": "opinion"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "這個變更是為了什麼",
+      "steps": [
+        {
+          "title": "先用一兩句話講出目的",
+          "blocks": [
+            {
+              "p": "假說：營運方發優惠碼，顧客在結帳前輸入代碼，扣款金額變成「總額 − 折扣」。每張券有使用上限和期限。受益的是想發折扣的營運方，和想拿折扣的顧客。",
+              "basis": "inferred"
+            },
+            {
+              "list": [
+                "`POST /orders/:id/coupon`，body 是 `{ \"code\": \"WELCOME\" }`",
+                "成功：200 `{ orderId, discountAmount }`",
+                "失敗：400 沒有 code、404 訂單或券不存在、409 狀態不對或名額用完、410 過期",
+                "之後的 `POST /orders/:id/checkout` 扣「總額 − 折扣」"
+              ]
+            },
+            {
+              "p": "帶著這個假說往下讀，要確認的是：「一張券最多用 max_uses 次」裡的「一次」，在程式碼裡到底是什麼時候、什麼動作？"
+            }
+          ]
+        },
+        {
+          "title": "變更前的程式碼守著哪些約定",
+          "blocks": [
+            {
+              "p": "新功能有沒有破壞舊的東西，得先知道舊程式碼答應過什麼。下面這些都不在 diff 裡，是從變更前的程式碼讀出來的。",
+              "basis": "fact"
+            },
+            {
+              "table": {
+                "head": [
+                  "約定",
+                  "在哪裡",
+                  "怎麼守"
+                ],
+                "rows": [
+                  [
+                    "金額是整數日圓，不為負",
+                    "`001_create_orders.sql:4-5`、`sqliteOrderRepository.test.ts`",
+                    "DB 的 CHECK"
+                  ],
+                  [
+                    "同一張訂單的扣款都用 key `order-<id>`",
+                    "`order.ts` 的 `paymentKeyFor`",
+                    "集中在一個函式"
+                  ],
+                  [
+                    "付款中（PENDING_PAYMENT）的訂單不能再動",
+                    "`orderService.ts:33-41`",
+                    "程序：先存狀態再扣款"
+                  ],
+                  [
+                    "外鍵真的會檢查",
+                    "`db.ts:10`",
+                    "連線初始化時打開"
+                  ]
+                ]
+              }
+            },
+            {
+              "code": {
+                "file": "src/payment/gateway.ts",
+                "at": "base",
+                "lines": [
+                  6,
+                  7
+                ],
+                "show": [
+                  1,
+                  8
+                ],
+                "marks": [
+                  {
+                    "line": 6,
+                    "text": "同一把 key 視為同一筆扣款"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "還有一件事：變更前沒有任何程式碼會改 `totalAmount`，所以同一把 key 送出的金額永遠相同。",
+              "basis": "fact"
+            },
+            {
+              "p": "這一章一句話：這個變更承諾「付款前把折扣記到訂單上，扣款 = 總額 − 折扣，而且一張券不會被用超過 max_uses 次」，同時不能弄壞上面四條舊約定。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "整體地圖",
+      "steps": [
+        {
+          "title": "檔案地圖：頭腦用在哪裡",
+          "asks": [
+            "`couponCode` 是可選，`discountAmount` 卻是必填，為什麼不一樣？"
+          ],
+          "blocks": [
+            {
+              "files": {
+                "roles": [
+                  {
+                    "file": "db/migrations/002_add_coupons.sql",
+                    "role": "core",
+                    "note": "新資料表與兩個新欄位"
+                  },
+                  {
+                    "file": "src/coupons/couponService.ts",
+                    "role": "core",
+                    "note": "套用的流程"
+                  },
+                  {
+                    "file": "src/coupons/sqliteCouponRepository.ts",
+                    "role": "core",
+                    "note": "名額的 +1"
+                  },
+                  {
+                    "file": "src/orders/orderService.ts",
+                    "role": "core",
+                    "note": "只改 1 行，但改的是扣款金額"
+                  },
+                  {
+                    "file": "src/server.ts",
+                    "role": "core",
+                    "note": "路由與 readJson"
+                  },
+                  {
+                    "file": "src/handlers/applyCoupon.ts",
+                    "role": "mechanical",
+                    "note": "錯誤 → HTTP 狀態碼"
+                  },
+                  {
+                    "file": "src/coupons/coupon.ts",
+                    "role": "mechanical",
+                    "note": "型別與錯誤類別"
+                  },
+                  {
+                    "file": "src/orders/order.ts",
+                    "role": "mechanical",
+                    "note": "新增兩個欄位"
+                  },
+                  {
+                    "file": "src/orders/sqliteOrderRepository.ts",
+                    "role": "mechanical",
+                    "note": "SQL 加欄位"
+                  },
+                  {
+                    "file": "src/app.ts",
+                    "role": "mechanical",
+                    "note": "接線"
+                  },
+                  {
+                    "file": "test/couponService.test.ts",
+                    "role": "test"
+                  },
+                  {
+                    "file": "test/orderService.test.ts",
+                    "role": "test",
+                    "note": "新增 1 個測試"
+                  },
+                  {
+                    "file": "test/reconcilePendingPayments.test.ts",
+                    "role": "test",
+                    "note": "只補欄位"
+                  },
+                  {
+                    "file": "test/sqliteOrderRepository.test.ts",
+                    "role": "test",
+                    "note": "只補欄位"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "約 430 行的 diff 裡，要動腦的大約 100 行：migration、couponService、consumeUse、checkout 的那一行，和 server 的路由。",
+              "basis": "inferred"
+            },
+            {
+              "p": "既有的三個測試檔，每處修改都只是在建立訂單時補上 `discountAmount: 0`，沒有改任何 assert 的期待值。原因是 `Order.discountAmount` 是必填，TypeScript 逼所有建立訂單的地方都要給值。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "處理的流程",
+          "blocks": [
+            {
+              "flow": {
+                "nodes": [
+                  {
+                    "label": "POST /orders/:id/coupon",
+                    "kind": "new",
+                    "note": "server.ts",
+                    "start": true
+                  },
+                  {
+                    "label": "readJson 讀 body",
+                    "kind": "new",
+                    "note": "server.ts:9-13",
+                    "next": "code"
+                  },
+                  {
+                    "label": "handleApplyCoupon",
+                    "kind": "new",
+                    "note": "檢查 code、對應錯誤碼"
+                  },
+                  {
+                    "label": "CouponService.apply",
+                    "kind": "new",
+                    "note": "狀態 → 券 → 名額 → 存訂單"
+                  },
+                  {
+                    "label": "coupons / orders 資料表",
+                    "kind": "external",
+                    "note": "SQLite（同步 API）"
+                  },
+                  {
+                    "label": "POST /orders/:id/checkout",
+                    "kind": "same",
+                    "note": "server.ts",
+                    "start": true
+                  },
+                  {
+                    "label": "OrderService.checkout",
+                    "kind": "changed",
+                    "note": "amount = 總額 − 折扣",
+                    "next": "charge"
+                  },
+                  {
+                    "label": "付款服務",
+                    "kind": "external",
+                    "note": "key：order-<id>"
+                  },
+                  {
+                    "label": "reconcilePendingPayments",
+                    "kind": "same",
+                    "note": "每 5 分鐘，讀寫整筆訂單",
+                    "start": true
+                  },
+                  {
+                    "label": "orders 資料表",
+                    "kind": "external"
+                  }
+                ]
+              }
+            },
+            {
+              "list": [
+                "花時間：apply 的順序與名額、checkout 那一行和冪等 key 的關係、到期時間的解析",
+                "快速帶過：錯誤類別、handler 的對應表、repository 加欄位（先確認它們真的都是同一個形狀）"
+              ]
+            },
+            {
+              "p": "這一章一句話：新功能只有一個寫入點（apply），讀的人只有 checkout。所以要確認的就是「apply 寫進去的東西，checkout 拿去扣款時還對不對」。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "機制：怎麼做、為什麼這樣做",
+      "steps": [
+        {
+          "title": "名額：檢查和 +1 放在同一條 UPDATE",
+          "asks": [
+            "`result.changes` 這個屬性，node:sqlite 一定會給嗎？"
+          ],
+          "blocks": [
+            {
+              "code": {
+                "file": "src/coupons/sqliteCouponRepository.ts",
+                "lines": [
+                  37,
+                  39
+                ],
+                "show": [
+                  31,
+                  40
+                ],
+                "marks": [
+                  {
+                    "line": 37,
+                    "text": "檢查與 +1 在同一條 SQL"
+                  },
+                  {
+                    "line": 39,
+                    "text": "真的更新到 1 列才算成功"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "上限的判斷不是先 `get` 再拿 `usedCount` 在程式裡比較，而是交給 `WHERE used_count < max_uses`。檢查和寫入之間沒有空隙。",
+              "basis": "fact"
+            },
+            {
+              "p": "一般來說，「先讀、在程式裡判斷、再寫」的寫法，兩個請求會在中間交錯，兩個都通過檢查。條件式 UPDATE 是避開這個問題的標準做法。",
+              "basis": "opinion"
+            },
+            {
+              "p": "如果拿掉這個 WHERE 條件，`test/couponService.test.ts:46-51`（maxUses 1，第二張訂單要被拒）的第二次 apply 會成功，測試會失敗。這條關鍵的行有測試守著。",
+              "basis": "inferred"
+            },
+            {
+              "schema": {
+                "migrations": "db/migrations",
+                "tables": [
+                  "coupons",
+                  "orders"
+                ],
+                "focus": [
+                  "orders.coupon_code",
+                  "orders.discount_amount"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "apply 的順序，與折扣的快照",
+          "blocks": [
+            {
+              "code": {
+                "file": "src/coupons/couponService.ts",
+                "lines": [
+                  25,
+                  33
+                ],
+                "show": [
+                  18,
+                  35
+                ],
+                "marks": [
+                  {
+                    "line": 28,
+                    "text": "這裡就扣掉名額"
+                  },
+                  {
+                    "line": 32,
+                    "text": "折扣上限是訂單總額"
+                  },
+                  {
+                    "line": 33,
+                    "text": "整筆訂單寫回"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "折扣金額在套用時就複製到訂單上（第 32 行）。checkout 只讀 `order.discountAmount`，不再查 coupons。所以之後改了券的面額，已經套用的訂單不受影響。",
+              "basis": "fact"
+            },
+            {
+              "p": "`orders.coupon_code` 參照 `coupons(code)`。這個外鍵確實有效，因為每次開連線時 `db.ts:10` 都會打開檢查。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/db.ts",
+                "lines": [
+                  10,
+                  10
+                ],
+                "show": [
+                  9,
+                  11
+                ],
+                "note": "未變更"
+              }
+            }
+          ]
+        },
+        {
+          "title": "checkout 在等付款服務時，同一張訂單送來 coupon",
+          "question": true,
+          "blocks": [
+            {
+              "p": "顧客按下結帳。checkout 存了狀態，正在等付款服務回應（逾時 10 秒，`app.ts` 的 `timeoutMs`）。這段時間裡，同一張訂單的 `POST /coupon` 到了。"
+            },
+            {
+              "p": "`save()` 會把整筆訂單的每個欄位都覆寫（`sqliteOrderRepository.ts:43-66`）。"
+            },
+            {
+              "p": "折扣會不會被 checkout 最後那次 save 蓋掉，結果名額扣了、顧客卻付了全額？反過來，apply 在讀訂單和寫訂單之間，checkout 能不能插進來？"
+            }
+          ]
+        },
+        {
+          "title": "答案：現在不會，靠的是兩件事",
+          "blocks": [
+            {
+              "timeline": {
+                "lanes": [
+                  "checkout 請求",
+                  "coupon 請求",
+                  "orders 資料表",
+                  "付款服務"
+                ],
+                "events": [
+                  {
+                    "lane": "checkout 請求",
+                    "to": "orders 資料表",
+                    "text": "存 PENDING_PAYMENT"
+                  },
+                  {
+                    "lane": "checkout 請求",
+                    "to": "付款服務",
+                    "text": "charge，等待中"
+                  },
+                  {
+                    "lane": "coupon 請求",
+                    "to": "orders 資料表",
+                    "text": "get：狀態是 PENDING_PAYMENT"
+                  },
+                  {
+                    "lane": "coupon 請求",
+                    "text": "409 invalid_order_state",
+                    "mark": "ok"
+                  },
+                  {
+                    "lane": "付款服務",
+                    "to": "checkout 請求",
+                    "text": "chargeId"
+                  },
+                  {
+                    "lane": "checkout 請求",
+                    "to": "orders 資料表",
+                    "text": "存 PAID，折扣沒被動過",
+                    "mark": "ok"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "第一，checkout 在扣款前就存了 PENDING_PAYMENT（`orderService.ts:40-41`），apply 的狀態檢查（`couponService.ts:21`）會拒絕它。這是變更前就為「按兩次結帳」設計的機制，新功能剛好搭上了。",
+              "basis": "fact"
+            },
+            {
+              "code": {
+                "file": "src/orders/orderService.ts",
+                "lines": [
+                  40,
+                  41
+                ],
+                "show": [
+                  37,
+                  41
+                ],
+                "note": "變更前就有"
+              }
+            },
+            {
+              "p": "第二，`DatabaseSync` 是同步 API，repository 的方法裡沒有真正等待 I/O 的地方。apply 唯一的 I/O 是在 get 之前讀 body。所以在單一 process 的 Node 裡，get 到 save 之間不會被別的請求插隊。",
+              "basis": "inferred"
+            },
+            {
+              "p": "不過第二點是「現在剛好如此」，不是資料庫保證的。換成非同步的資料庫驅動，這個空隙就會打開，加上整列覆寫，就會出現更新遺失。",
+              "basis": "opinion"
+            },
+            {
+              "p": "這一章一句話：apply 保證「名額不超賣，折扣以快照存在訂單上」；付款中的訂單不會被改，則是沿用 checkout 原本的狀態約定。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "資深工程師會在這裡停下來",
+      "steps": [
+        {
+          "title": "同一張訂單，同一張券送兩次",
+          "question": true,
+          "blocks": [
+            {
+              "p": "顧客在結帳頁連按了兩次「套用」。同一張訂單 o1、同一個代碼 WELCOME（max_uses 10），各送出一次 `POST /orders/o1/coupon`。"
+            },
+            {
+              "p": "兩次都回 200 之後，coupons 資料表裡 WELCOME 的 `used_count` 是多少？如果第二次送的是另一張券 SPRING，WELCOME 的名額會怎樣？"
+            }
+          ]
+        },
+        {
+          "title": "答案：used_count 是 2；換券的話舊券的名額回不來",
+          "asks": [
+            "max_uses 是 1 的券，同一張單按兩次會怎樣？"
+          ],
+          "blocks": [
+            {
+              "timeline": {
+                "lanes": [
+                  "請求 1",
+                  "請求 2",
+                  "coupons",
+                  "orders"
+                ],
+                "events": [
+                  {
+                    "lane": "請求 1",
+                    "to": "coupons",
+                    "text": "consumeUse：0 → 1"
+                  },
+                  {
+                    "lane": "請求 1",
+                    "to": "orders",
+                    "text": "存 WELCOME、折扣 500"
+                  },
+                  {
+                    "lane": "請求 2",
+                    "to": "orders",
+                    "text": "get：狀態仍是 CART"
+                  },
+                  {
+                    "lane": "請求 2",
+                    "to": "coupons",
+                    "text": "consumeUse：1 → 2",
+                    "mark": "bad"
+                  },
+                  {
+                    "lane": "請求 2",
+                    "to": "orders",
+                    "text": "再存一次相同內容"
+                  },
+                  {
+                    "lane": "請求 2",
+                    "text": "200，畫面上一切正常",
+                    "mark": "note"
+                  }
+                ]
+              }
+            },
+            {
+              "code": {
+                "file": "src/coupons/couponService.ts",
+                "lines": [
+                  28,
+                  30
+                ],
+                "show": [
+                  25,
+                  30
+                ],
+                "marks": [
+                  {
+                    "line": 28,
+                    "text": "扣名額前沒看 order.couponCode"
+                  },
+                  {
+                    "line": 30,
+                    "text": "舊的 couponCode 直接被蓋掉"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "`apply()` 沒有任何一處檢查訂單是否已經套過券，整個 repository 也沒有把 `used_count` 減回去的程式碼。換成 SPRING 時，WELCOME 被扣的那一次永遠不會還回來。",
+              "basis": "fact"
+            },
+            {
+              "p": "`server.ts` 沒有認證，也沒有頻率限制。一個顧客對自己的訂單連送 10 次，就能把這張券的名額用光，其他人都用不到。四個新測試都是「一張訂單套一次」，沒有測重複套用。",
+              "basis": "fact"
+            },
+            {
+              "list": [
+                "重量：必須。只靠使用者的操作就能讓名額消失，牽涉到錢，而且能在這個 repository 裡指出具體的輸入。"
+              ]
+            }
+          ]
+        },
+        {
+          "title": "修正案，以及它擋不住的地方",
+          "asks": [
+            "顧客放棄購物車時把名額還回去，不就好了？"
+          ],
+          "blocks": [
+            {
+              "snippet": {
+                "label": "修正案（這個 repository 裡沒有的程式碼）",
+                "lang": "typescript",
+                "text": "// apply() 裡，在 consumeUse 之前\nif (order.couponCode === code) return order; // 同一張：不再扣\nif (order.couponCode) throw new CouponAlreadyAppliedError(order.id);\n\n// 測試：套兩次只扣一次\nawait service.apply('o1', 'WELCOME');\nawait service.apply('o1', 'WELCOME');\nassert.equal((await coupons.get('WELCOME'))?.usedCount, 1);"
+              }
+            },
+            {
+              "p": "用值追一次：第 1 次 used_count 0 → 1，存下 WELCOME。第 2 次 get 讀到 couponCode = WELCOME，直接回傳，used_count 停在 1。換成 SPRING 會回 409，WELCOME 的名額沒有浪費。",
+              "basis": "inferred"
+            },
+            {
+              "p": "擋不住的有兩個。第一，套用後放棄購物車，名額照樣被扣掉。第二，這個檢查一樣依賴「get 到 save 之間沒有 I/O」（上一章）。換成非同步的資料庫時，要把 `UPDATE orders ... WHERE coupon_code IS NULL` 和 consumeUse 放進同一個交易。",
+              "basis": "inferred"
+            },
+            {
+              "p": "沒有選的設計：在 checkout 存 PENDING_PAYMENT 時才扣名額。好處是放棄的購物車不佔名額。代價是 checkout 要認識 coupon，付款前才發現名額用完需要新的錯誤，拒付後要不要退名額也得決定。",
+              "basis": "opinion"
+            },
+            {
+              "p": "所以名額算的是「套用過」，還是「付款完成」？這要在合併前請定規格的人回答。"
+            }
+          ]
+        },
+        {
+          "title": "被拒付後套券，再結帳：送出去的是什麼",
+          "asks": [
+            "reconcile 批次會不會把這種訂單判錯？"
+          ],
+          "blocks": [
+            {
+              "code": {
+                "file": "src/orders/orderService.ts",
+                "lines": [
+                  45,
+                  48
+                ],
+                "show": [
+                  44,
+                  49
+                ],
+                "marks": [
+                  {
+                    "line": 45,
+                    "text": "金額現在會隨券改變"
+                  },
+                  {
+                    "line": 48,
+                    "text": "key 永遠是 order-<id>"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "apply 接受 PAYMENT_FAILED（`couponService.ts:21`）。3000 元被拒付 → 套 500 元券 → 再結帳，就會以同一把 key `order-o1` 送出 2500 元。變更前，同一把 key 的金額永遠相同（第 2 章）。",
+              "basis": "fact"
+            },
+            {
+              "p": "付款服務怎麼處理「同 key、不同金額」，這個 repository 只有 `gateway.ts:6` 一句說明，看不出來。",
+              "basis": "fact"
+            },
+            {
+              "p": "但我們這邊會怎麼反應是確定的：如果對方回 402 以外的 4xx，`httpGateway.ts:35-37` 會拋出一般的 Error。checkout 的 catch 不把它當拒付，訂單停在 PENDING_PAYMENT，server 回 500。10 分鐘後若 reconcile 查不到扣款，就改成 PAYMENT_FAILED，顧客再按一次又是同樣的結果。",
+              "basis": "fact"
+            },
+            {
+              "p": "同類的點：折扣上限是訂單總額（測試 `caps the discount` 期待 3000），所以 5000 元券套在 3000 元訂單上會送出 `amount: 0`。付款服務收不收 0 元，同樣看不出來。",
+              "basis": "fact"
+            },
+            {
+              "list": [
+                "重量：提問。正確與否取決於外部規格，合併前要有人查付款服務的文件。",
+                "低成本的選項：apply 只接受 CART。被拒付的訂單就不能再改金額，「同 key 同金額」的約定也回來了。代價是被拒付的顧客不能補券。"
+              ]
+            }
+          ]
+        },
+        {
+          "title": "到期時間：字串直接交給 new Date",
+          "asks": [
+            "SQLite 能用 CHECK 擋住時間格式嗎？"
+          ],
+          "blocks": [
+            {
+              "code": {
+                "file": "src/coupons/sqliteCouponRepository.ts",
+                "lines": [
+                  27,
+                  27
+                ],
+                "show": [
+                  22,
+                  28
+                ],
+                "marks": [
+                  {
+                    "line": 27,
+                    "text": "格式不檢查"
+                  }
+                ]
+              }
+            },
+            {
+              "code": {
+                "file": "src/coupons/couponService.ts",
+                "lines": [
+                  27,
+                  27
+                ],
+                "show": [
+                  26,
+                  28
+                ],
+                "marks": [
+                  {
+                    "line": 27,
+                    "text": "Invalid Date 時這裡是 false"
+                  }
+                ]
+              }
+            },
+            {
+              "p": "這個 repository 裡沒有建立券的程式碼，只有測試用 `'2026-12-31T00:00:00Z'` 插入。migration 只寫了 `expires_at TEXT NOT NULL`，README 也沒寫格式。",
+              "basis": "fact"
+            },
+            {
+              "p": "營運方手動寫入時打錯格式，`new Date()` 會得到 Invalid Date，和現在比較永遠是 false，這張券就永遠不會過期。期限檢查失敗時是放行的方向。",
+              "basis": "inferred"
+            },
+            {
+              "p": "只寫日期的 `'2026-12-31'` 會被當成 UTC 午夜，也就是台灣、日本時間 12/31 早上 8、9 點就過期。這個服務用 JPY 扣款（`gateway.ts:4`），顧客的時區很可能不是 UTC。",
+              "basis": "inferred"
+            },
+            {
+              "list": [
+                "重量：建議。讀取時遇到無效日期就丟錯（往拒絕的方向倒），並在 migration 或 README 寫明格式與時區。"
+              ]
+            }
+          ]
+        },
+        {
+          "title": "其他看到的，短短列出",
+          "blocks": [
+            {
+              "table": {
+                "head": [
+                  "重量",
+                  "內容",
+                  "位置"
+                ],
+                "rows": [
+                  [
+                    "建議",
+                    "`orders.discount_amount` 沒有 CHECK；舊慣例是把「金額不為負」交給 DB，新欄位只靠 Math.min",
+                    "`002_add_coupons.sql:10`"
+                  ],
+                  [
+                    "建議",
+                    "consumeUse 和 orders.save 是兩次寫入，不在同一個交易裡",
+                    "`couponService.ts:28-33`"
+                  ],
+                  [
+                    "建議",
+                    "無效的 JSON 會讓 JSON.parse 拋錯，回 500 而不是 400；body 沒有大小上限",
+                    "`server.ts:9-13`"
+                  ],
+                  [
+                    "建議",
+                    "退回舊版時，舊的 checkout 不看 discount_amount，已套券的訂單會被扣全額",
+                    "`orderService.ts:45`"
+                  ],
+                  [
+                    "建議",
+                    "README 還只寫 checkout，沒寫新端點和建立券的方法",
+                    "`README.md:7`"
+                  ],
+                  [
+                    "提問",
+                    "404 coupon_not_found 讓人能試出代碼，又沒有頻率限制，可以接受嗎？",
+                    "`applyCoupon.ts:17`"
+                  ],
+                  [
+                    "Nit",
+                    "CouponService 依賴具體的 Sqlite 類別，訂單那邊用的是介面",
+                    "`couponService.ts:8`"
+                  ],
+                  [
+                    "Nit",
+                    "沿用 InvalidOrderStateError，訊息仍是 cannot be checked out",
+                    "`orderService.ts:16`"
+                  ],
+                  [
+                    "Nit",
+                    "狀態條件抄自 checkout；「可改」和「可結帳」目前只是剛好一樣",
+                    "`couponService.ts:21`"
+                  ]
+                ]
+              }
+            },
+            {
+              "p": "表裡的每個位置都在這個 repository 裡打開確認過。",
+              "basis": "fact"
+            }
+          ]
+        },
+        {
+          "title": "看起來可疑，但不必在意的地方",
+          "blocks": [
+            {
+              "list": [
+                "並行使用超過上限：consumeUse 是單一的條件式 UPDATE（`sqliteCouponRepository.ts:37`），測試也守著",
+                "外鍵只是宣告：`db.ts:10` 每次開連線都打開 foreign_keys",
+                "migration 中途失敗：`db.ts:17-25` 在交易中套用，失敗就 ROLLBACK；新欄位有預設值，舊訂單讀出來折扣是 0",
+                "既有測試被改：只補了 `discountAmount: 0`，沒有改任何期待值",
+                "效能：新的查詢全是主鍵查詢，沒有隨資料量增加的迴圈",
+                "認證：coupon 端點沒有認證，但 checkout 本來就沒有（`server.ts:15-31`），不是這次才有的缺口"
+              ]
+            },
+            {
+              "p": "以上每一項都在這個 repository 裡找到了根據。",
+              "basis": "fact"
+            },
+            {
+              "p": "這一章一句話：名額「不會超賣」有保證，但「一張訂單只算一次」沒有保證；金額改變後，和付款服務之間的冪等約定也需要重新確認。",
+              "basis": "inferred"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "總結",
+      "steps": [
+        {
+          "title": "整體：變好了嗎？會怎麼留言",
+          "blocks": [
+            {
+              "p": "分層、條件式 UPDATE、折扣快照，和沿用 PENDING_PAYMENT 的狀態約定，方向都對，新功能也沒有破壞舊的狀態機。",
+              "basis": "inferred"
+            },
+            {
+              "p": "但有一項必須：同一張訂單重複套券會吃掉名額。所以判斷是「方向正確，修好必須項並確認付款服務的規格後再合併」。",
+              "basis": "opinion"
+            },
+            {
+              "list": [
+                "【必須】`apply()` 沒看訂單上已有的 couponCode：按兩次扣兩個名額，換券時舊券名額回不來。請處理已套用的情況，並補「套兩次只扣一次」的測試。（`couponService.ts:28-30`）",
+                "【提問】被拒付的訂單套券後再結帳，會用同一把 key 送出不同金額；折扣等於總額時會送出 0 元。付款服務允許嗎？查不到的話，先讓 apply 只接受 CART？",
+                "【建議】`expires_at` 格式錯誤時會變成永不過期。讀取時拒絕無效日期，並寫明格式與時區。",
+                "【優點】名額的檢查與 +1 在同一條 UPDATE；折扣以快照存在訂單上；付款中不能改券，沿用了既有的約定。"
+              ]
+            }
+          ]
+        },
+        {
+          "title": "這趟追體驗了什麼",
+          "blocks": [
+            {
+              "list": [
+                "先用一句話講出目的，再帶著「名額的一次是什麼」這個問題讀下去",
+                "讀 diff 之前，先從變更前的程式碼列出它答應過的事（冪等 key、狀態、DB 制約）",
+                "懷疑並行問題時，先確認是否真的會交錯（狀態檢查、同步驅動），再分清「有保證」和「剛好如此」",
+                "不信名字：`apply` 看起來是個無害的設定動作，實際上每呼叫一次就消耗一個名額",
+                "用具體的值追：按兩次、換券、拒付後補券、5000 元券配 3000 元訂單、打錯的日期",
+                "外部規格看不到的地方不下定論，但我們這邊的程式碼會怎麼反應，要追到底"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
