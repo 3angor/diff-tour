@@ -231,14 +231,14 @@ git と、次のどれか 1 つ（インストールしてログイン済みの�
 | [Claude Code](https://claude.com/claude-code) | `claude --version` | `claude` を一度起動する |
 | [Codex CLI](https://github.com/openai/codex) | `codex --version` | `codex login` |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `gemini --version` | `gemini` を一度起動する |
-| [OpenCode](https://opencode.ai) 2 | `opencode --version`（2.0 以降） | `opencode auth login` |
+| [OpenCode](https://opencode.ai) 2 | `opencode --version`（2.0 以降）、または `opencode2 --version` | `opencode auth login` |
 | [Copilot CLI](https://github.com/github/copilot-cli) | `copilot --version` | `copilot login` |
 
 Gemini CLI への対応は試験的なものです。読み取り専用で動くことは本物の Gemini CLI で確かめましたが、本物の Gemini のモデルでツアーを最後まで作ったことはまだありません。うまく動かないときは [Issue](https://github.com/init-co-jp/diff-tour/issues) で教えてください。
 
 OpenCode への対応は始めたばかりです。Linux で、OpenCode 2.0.29 とその無料のモデルを使ってツアーを最後まで作れることは確かめましたが、macOS と Windows ではまだ試していません。
 
-Copilot CLI への対応は試験的なものです。読み取り専用で動くことは、Linux の本物の Copilot CLI 1.0.98 に、決めた動きをする代わりのモデルをつないで確かめましたが、本物の Copilot のモデルでツアーを最後まで作ったことはまだありません。
+Copilot CLI への対応は試験的なものです。読み取り専用で動くことは、Linux の本物の Copilot CLI 1.0.98 に、決めた動きをする代わりのモデルをつないで確かめましたが、本物の Copilot のモデルでツアーを最後まで作ったことはまだありません。うまく動かないときは [Issue](https://github.com/init-co-jp/diff-tour/issues) で教えてください。
 
 あとは、リポジトリの中で実行するだけです。
 

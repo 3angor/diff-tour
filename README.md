@@ -231,14 +231,14 @@ You need git and one of these, installed and signed in:
 | [Claude Code](https://claude.com/claude-code) | `claude --version` | run `claude` once |
 | [Codex CLI](https://github.com/openai/codex) | `codex --version` | `codex login` |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `gemini --version` | run `gemini` once |
-| [OpenCode](https://opencode.ai) 2 | `opencode --version` (2.0 or later) | `opencode auth login` |
+| [OpenCode](https://opencode.ai) 2 | `opencode --version` (2.0 or later), or `opencode2 --version` | `opencode auth login` |
 | [Copilot CLI](https://github.com/github/copilot-cli) | `copilot --version` | `copilot login` |
 
 Gemini CLI support is experimental. Its read-only setup was tested against the real Gemini CLI, but a full tour has not yet been written with a real Gemini model. If it fails, please [open an issue](https://github.com/init-co-jp/diff-tour/issues).
 
 OpenCode support is new. A full tour was written with OpenCode 2.0.29 and one of its free models on Linux, but not yet on macOS or Windows.
 
-Copilot CLI support is experimental. Its read-only setup was tested against the real Copilot CLI 1.0.98 on Linux, driven by a scripted stand-in model, but a full tour has not yet been written with a real Copilot model.
+Copilot CLI support is experimental. Its read-only setup was tested against the real Copilot CLI 1.0.98 on Linux, driven by a scripted stand-in model, but a full tour has not yet been written with a real Copilot model. If it fails, please [open an issue](https://github.com/init-co-jp/diff-tour/issues).
 
 Then, in a repository:
 
