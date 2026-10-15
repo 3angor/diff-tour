@@ -17,7 +17,7 @@ Walk through a diff the way a senior engineer reads it.
 
 ## Quick start
 
-You need git and one of [Claude Code](https://claude.com/claude-code), [Codex CLI](https://github.com/openai/codex) or [Gemini CLI](https://github.com/google-gemini/gemini-cli), signed in.
+You need git and one of [Claude Code](https://claude.com/claude-code), [Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli) or [OpenCode](https://opencode.ai) 2, signed in.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/init-co-jp/diff-tour/main/install.sh | sh
@@ -49,7 +49,7 @@ AI can write code that works. It does not teach you *why* the code is written th
 
 This view comes from what experienced engineers have written down about reading and reviewing code, collected in [`internal/generate/lessons`](internal/generate/lessons) (in Japanese). The LLM reads it before every tour.
 
-The tour is written by an LLM you already use: Claude Code, Codex CLI or Gemini CLI. `tour` is read-only. It never changes your files or your repository.
+The tour is written by an LLM you already use: Claude Code, Codex CLI, Gemini CLI or OpenCode. `tour` is read-only. It never changes your files or your repository.
 
 ## How it works
 
@@ -63,7 +63,7 @@ The tour is written by an LLM you already use: Claude Code, Codex CLI or Gemini 
  (built into tour)   ──────────────────▶  lessons/       what senior engineers have learned
                                                  │
                                                  ▼
-                      Claude Code / Codex / Gemini, started in that directory
+                      Claude Code / Codex / Gemini / OpenCode, started in that directory
                       with read-only permissions. It reads, then writes the
                       tour as JSON.
                                                  │
@@ -93,7 +93,7 @@ Sending your code to an LLM is a real decision, so here is exactly what happens.
 - the prompt in [`internal/generate/prompts`](internal/generate/prompts)
 - when you press <kbd>?</kbd>: your question and the whole tour, with the same files
 
-They go to the provider of that tool (Anthropic, OpenAI or Google), under the terms of your account with them. `tour` itself makes no network requests, has no server, and collects no telemetry.
+They go to the provider of that tool (Anthropic, OpenAI or Google; with OpenCode, the provider of the model you use), under the terms of your account with them. `tour` itself makes no network requests, has no server, and collects no telemetry.
 
 **Not possible for the LLM:**
 
@@ -147,6 +147,23 @@ Gemini CLI always saves the session to `~/.gemini/tmp`, and deletes it after 30 
 Source: [`internal/generate/gemini.go`](internal/generate/gemini.go)
 </details>
 
+<details>
+<summary><b>OpenCode</b>: an agent of its own that can only read and search</summary>
+
+```text
+opencode run --standalone --format json --agent diff-tour
+```
+
+- `tour` passes its own config in `OPENCODE_CONFIG_CONTENT`, which outranks yours. It denies every tool and then allows only `read`, `glob` and `grep`, and the agent `diff-tour` ends with the same rules. Reading outside the export directory is denied.
+- Policies, which can only take permissions away, block every other tool too, and every MCP server, skill and plugin.
+- `OPENCODE_CONFIG_DIR` points to an empty directory and project config is turned off, so nothing in `~/.config/opencode` (plugins, MCP servers, agents, `AGENTS.md`) and no `opencode.json` or `AGENTS.md` in the repository is loaded. Only `model` and the provider settings are copied from your config, so your model and sign-ins still work.
+- `--standalone` runs a private server instead of the background service.
+
+OpenCode keeps the session in its database (`~/.local/share/opencode/opencode.db`), like any other session. A system config in `/etc/opencode` outranks these settings.
+Only OpenCode 2 is supported. If `opencode` is OpenCode 1, `tour` looks for `opencode2`, which OpenCode 2 also installs.
+Source: [`internal/generate/opencode.go`](internal/generate/opencode.go)
+</details>
+
 The LLM still reads your code, so text in the code can try to steer what it writes (prompt injection). With these permissions it cannot act on that. Still, a tour is an explanation, not a guarantee: check what it says against the code it shows.
 
 ## Install
@@ -195,8 +212,11 @@ You need git and one of these, installed and signed in:
 | [Claude Code](https://claude.com/claude-code) | `claude --version` | run `claude` once |
 | [Codex CLI](https://github.com/openai/codex) | `codex --version` | `codex login` |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `gemini --version` | run `gemini` once |
+| [OpenCode](https://opencode.ai) 2 | `opencode --version` (2.0 or later) | `opencode auth login` |
 
 Gemini CLI support is experimental. Its read-only setup was tested against the real Gemini CLI, but a full tour has not yet been written with a real Gemini model. If it fails, please [open an issue](https://github.com/init-co-jp/diff-tour/issues).
+
+OpenCode support is new. A full tour was written with OpenCode 2.0.29 and one of its free models on Linux, but not yet on macOS or Windows.
 
 Then, in a repository:
 
@@ -278,7 +298,7 @@ If the file on disk differs from the commit being toured, `tour` opens a read-on
 ## FAQ
 
 **How much does a tour cost?**
-It runs on your own Claude Code, Codex or Gemini plan. With Claude Code, one tour of a change of about 250 lines used the equivalent of $1.00 to $1.50 at API prices. Opening a saved tour again costs nothing.
+It runs on your own Claude Code, Codex, Gemini or OpenCode plan. With Claude Code, one tour of a change of about 250 lines used the equivalent of $1.00 to $1.50 at API prices. Opening a saved tour again costs nothing.
 
 **Why does it take minutes?**
 Before writing, the LLM reads the files around the change, not only the diff. That reading is what lets the tour explain code that did not change.

@@ -1,10 +1,12 @@
 package ui
 
 import (
+	"errors"
 	"os/exec"
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/init-co-jp/diff-tour/internal/generate"
 	"github.com/init-co-jp/diff-tour/internal/i18n"
 	"github.com/init-co-jp/diff-tour/internal/text"
 )
@@ -30,7 +32,20 @@ func DetectLLMs() []LLMOption {
 		command("claude-code", "Claude Code", "claude"),
 		command("codex", "Codex CLI", "codex"),
 		command("gemini", "Gemini CLI", "gemini"),
+		openCode(),
 	}
+}
+
+// openCode is found only as OpenCode 2. OpenCode 1 is reported as too old.
+func openCode() LLMOption {
+	o := LLMOption{ID: "opencode", Name: "OpenCode", Status: "setup.notFound"}
+	switch _, err := generate.FindOpenCode(); {
+	case err == nil:
+		o.Available, o.Status = true, "setup.found"
+	case errors.Is(err, generate.ErrOpenCodeV1):
+		o.Status = "setup.needsV2"
+	}
+	return o
 }
 
 // Setup is the first-run screen for choosing the language and LLM. The recommended options are preselected, so Enter alone moves on.

@@ -17,7 +17,7 @@
 
 ## クイックスタート
 
-git と、[Claude Code](https://claude.com/claude-code)、[Codex CLI](https://github.com/openai/codex)、[Gemini CLI](https://github.com/google-gemini/gemini-cli) のどれか 1 つ（ログイン済みのもの）が必要です。
+git と、[Claude Code](https://claude.com/claude-code)、[Codex CLI](https://github.com/openai/codex)、[Gemini CLI](https://github.com/google-gemini/gemini-cli)、[OpenCode](https://opencode.ai) 2 のどれか 1 つ（ログイン済みのもの）が必要です。
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/init-co-jp/diff-tour/main/install.sh | sh
@@ -49,7 +49,7 @@ AI に頼めば、動くコードはできます。でも、なぜそう書い�
 
 この見方は、経験を積んだエンジニアがコードの読み方やレビューについて書き残してきたことを、[`internal/generate/lessons`](internal/generate/lessons) にまとめたものに基づきます。LLM はツアーを書くたびに、これを読みます。
 
-ツアーを書くのは、ふだん使っている LLM（Claude Code、Codex CLI、Gemini CLI）です。`tour` は読み取り専用で、ファイルもリポジトリも書き換えません。
+ツアーを書くのは、ふだん使っている LLM（Claude Code、Codex CLI、Gemini CLI、OpenCode）です。`tour` は読み取り専用で、ファイルもリポジトリも書き換えません。
 
 ## 仕組み
 
@@ -63,7 +63,7 @@ AI に頼めば、動くコードはできます。でも、なぜそう書い�
  (built into tour)   ──────────────────▶  lessons/       what senior engineers have learned
                                                  │
                                                  ▼
-                      Claude Code / Codex / Gemini, started in that directory
+                      Claude Code / Codex / Gemini / OpenCode, started in that directory
                       with read-only permissions. It reads, then writes the
                       tour as JSON.
                                                  │
@@ -93,7 +93,7 @@ AI に頼めば、動くコードはできます。でも、なぜそう書い�
 - [`internal/generate/prompts`](internal/generate/prompts) にあるプロンプト
 - <kbd>?</kbd> を押したとき：あなたの質問と、ツアーの全体（ファイルは上と同じもの）
 
-送り先は、そのツールの提供元（Anthropic、OpenAI、Google）で、あなたのアカウントの利用規約に従います。`tour` 自身はネットワークに一切つながず、サーバーも持たず、利用状況も集めません。
+送り先は、そのツールの提供元（Anthropic、OpenAI、Google。OpenCode なら、使っているモデルの提供元）で、あなたのアカウントの利用規約に従います。`tour` 自身はネットワークに一切つながず、サーバーも持たず、利用状況も集めません。
 
 **LLM にはできないこと：**
 
@@ -147,6 +147,23 @@ Gemini CLI は、セッションを必ず `~/.gemini/tmp` に保存します（�
 ソース：[`internal/generate/gemini.go`](internal/generate/gemini.go)
 </details>
 
+<details>
+<summary><b>OpenCode</b>：読むことと探すことしかできない専用のエージェント</summary>
+
+```text
+opencode run --standalone --format json --agent diff-tour
+```
+
+- `OPENCODE_CONFIG_CONTENT`：`tour` の設定を渡す。あなたの設定より優先される。すべての道具を禁じたうえで `read`、`glob`、`grep` だけを許し、エージェント `diff-tour` も最後に同じ規則を持つ。書き出したディレクトリの外は読めない
+- ポリシー（権限を減らす方向にしか働かない）でも、ほかの道具と、MCP サーバー、スキル、プラグインをすべて禁じる
+- `OPENCODE_CONFIG_DIR` に空のディレクトリを渡し、プロジェクトの設定も切るので、`~/.config/opencode` の中身（プラグイン、MCP サーバー、エージェント、`AGENTS.md`）も、リポジトリの中の `opencode.json` や `AGENTS.md` も読み込まない。あなたの設定から写すのは `model` とプロバイダの設定だけなので、選んでいるモデルとログインはそのまま使える
+- `--standalone`：常駐サーバーではなく、この実行だけのサーバーを使う
+
+OpenCode は、ほかのセッションと同じように、セッションをデータベース（`~/.local/share/opencode/opencode.db`）に残します。管理者が置いた `/etc/opencode` のシステム設定は、これらの設定より優先されます。
+対応しているのは OpenCode 2 だけです。`opencode` が OpenCode 1 のときは、OpenCode 2 が一緒に入れる `opencode2` を探します。
+ソース：[`internal/generate/opencode.go`](internal/generate/opencode.go)
+</details>
+
 それでも LLM はあなたのコードを読みます。コードの中の文章が、LLM の書く内容をねじ曲げようとすることはありえます（プロンプトインジェクション）。上の権限があるので、LLM がそれに従って何かを実行することはできません。とはいえ、ツアーはあくまで説明で、保証ではありません。書いてあることは、画面のコードと照らし合わせて確かめてください。
 
 ## インストール
@@ -195,8 +212,11 @@ git と、次のどれか 1 つ（インストールしてログイン済みの�
 | [Claude Code](https://claude.com/claude-code) | `claude --version` | `claude` を一度起動する |
 | [Codex CLI](https://github.com/openai/codex) | `codex --version` | `codex login` |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `gemini --version` | `gemini` を一度起動する |
+| [OpenCode](https://opencode.ai) 2 | `opencode --version`（2.0 以降） | `opencode auth login` |
 
 Gemini CLI への対応は試験的なものです。読み取り専用で動くことは本物の Gemini CLI で確かめましたが、本物の Gemini のモデルでツアーを最後まで作ったことはまだありません。うまく動かないときは [Issue](https://github.com/init-co-jp/diff-tour/issues) で教えてください。
+
+OpenCode への対応は始めたばかりです。Linux で、OpenCode 2.0.29 とその無料のモデルを使ってツアーを最後まで作れることは確かめましたが、macOS と Windows ではまだ試していません。
 
 あとは、リポジトリの中で実行するだけです。
 
@@ -278,7 +298,7 @@ export TOUR_EDITOR='code -g {file}:{line}'
 ## よくある質問
 
 **1 回にいくらかかりますか？**
-あなたの Claude Code、Codex、Gemini のプランの中で動きます。Claude Code で約 250 行の変更をツアーにしたときは、API の料金に換算して 1 回 $1.00〜$1.50 ほどでした。保存したツアーを開き直すのには、費用はかかりません。
+あなたの Claude Code、Codex、Gemini、OpenCode のプランの中で動きます。Claude Code で約 250 行の変更をツアーにしたときは、API の料金に換算して 1 回 $1.00〜$1.50 ほどでした。保存したツアーを開き直すのには、費用はかかりません。
 
 **なぜ数分もかかるのですか？**
 LLM は書き始める前に、差分だけでなく、変更のまわりのファイルも読みます。その下調べがあるから、変更していないコードまで説明できます。
