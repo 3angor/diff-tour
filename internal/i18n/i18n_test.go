@@ -26,6 +26,7 @@ func TestDetect(t *testing.T) {
 		{"", "zh", ZH},
 		{"zh_SG.UTF-8", "en_US.UTF-8", ZH},
 		{"en_US.UTF-8", "zh_CN.UTF-8", EN},
+		{"", "es_MX.UTF-8", ES},
 		{"", "fr_FR.UTF-8", EN}, // unsupported languages fall back to English
 		{"C", "ja_JP.UTF-8", JA},
 		{"en_US.UTF-8", "ja_JP.UTF-8", EN}, // LC_ALL takes precedence
@@ -78,7 +79,7 @@ func TestParse(t *testing.T) {
 		{"zh_CN", ZH, true}, {"ZH_cn", ZH, true}, {"zh-Hans", ZH, true}, {"ZH-hANS", ZH, true}, {"zh-SG", ZH, true},
 		{"zh-Hant", ZHHant, true}, {"ZH-HANT", ZHHant, true}, {"zh-TW", ZHHant, true}, {"zh_tw", ZHHant, true},
 		{"zh-HK", ZHHant, true}, {"zh_MO", ZHHant, true}, {"zh-Hant-HK", ZHHant, true}, {"zh-Hans-TW", ZH, true},
-		{"zhx", EN, false},
+		{"zhx", EN, false}, {"es", ES, true}, {"ES", ES, true},
 		{"", EN, false}, {"fr", EN, false}, {"en-US", EN, false}, {"ja_JP", EN, false},
 	} {
 		if got, ok := Parse(c.input); got != c.want || ok != c.ok {
@@ -87,10 +88,10 @@ func TestParse(t *testing.T) {
 	}
 }
 
-// TestLanguageChoices fixes the order of the choices in setup and the names of Chinese.
+// TestLanguageChoices fixes the order of the choices in setup and the names of Chinese and Spanish.
 func TestLanguageChoices(t *testing.T) {
-	if !slices.Equal(Langs, []Lang{EN, JA, ZH, ZHHant}) || ZH.Name() != "简体中文" || ZHHant.Name() != "繁體中文" {
-		t.Fatalf("choices = %v, names = %q, %q", Langs, ZH.Name(), ZHHant.Name())
+	if !slices.Equal(Langs, []Lang{EN, JA, ZH, ZHHant, ES}) || ZH.Name() != "简体中文" || ZHHant.Name() != "繁體中文" || ES.Name() != "Español" {
+		t.Fatalf("choices = %v, names = %q, %q, %q", Langs, ZH.Name(), ZHHant.Name(), ES.Name())
 	}
 }
 
