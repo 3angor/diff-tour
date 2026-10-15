@@ -1,0 +1,16 @@
+name: Feature request
+description: Something new, including support for another LLM
+labels: [enhancement]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: What you want to do
+      description: What you are trying to do, and where `tour` gets in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: How you imagine it working. For another LLM, a link to its CLI docs helps.

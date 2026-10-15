@@ -340,6 +340,10 @@ go run ./cmd/tour tours/example-coupons.en.json --repo path/to/diff-tour-example
 
 `--dump` prints every step at a fixed screen size, which is handy for checking layouts without a terminal. [`demo/`](demo) records the GIFs, and [`experiments/generate`](experiments/generate) has the notes from tuning the prompts.
 
+## Contributing
+
+Requests and bug reports are very welcome as [issues](https://github.com/init-co-jp/diff-tour/issues/new/choose), in English or Japanese. We don't accept pull requests. We write the changes ourselves, so that every change gets the same review of what the LLM can read and do. [CONTRIBUTING.md](CONTRIBUTING.md) has the details.
+
 ## License
 
 [MIT](LICENSE)

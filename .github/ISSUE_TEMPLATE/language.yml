@@ -1,0 +1,21 @@
+name: Language
+description: Screens and tours in another language
+body:
+  - type: input
+    id: language
+    attributes:
+      label: Language
+      description: For Chinese, for example, say which readers (mainland China, Taiwan or Hong Kong).
+    validations:
+      required: true
+  - type: checkboxes
+    id: review
+    attributes:
+      label: Review
+      options:
+        - label: I can read a draft and point out what sounds unnatural.
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Terms that are usually left in English, conventions for code reviews, or anything else we should know.

@@ -1,0 +1,33 @@
+name: Bug report
+description: Something does not work as it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: tour version
+      description: The output of `tour --version`.
+    validations:
+      required: true
+  - type: input
+    id: llm
+    attributes:
+      label: LLM and its version
+      description: For example, `claude --version`, `codex --version` or `opencode --version`.
+  - type: input
+    id: os
+    attributes:
+      label: OS and terminal
+      description: For example, macOS 15 with iTerm2, or Ubuntu 24.04 with GNOME Terminal.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error messages or screenshots
+      description: Please remove anything private first.

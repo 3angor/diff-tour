@@ -1,0 +1,21 @@
+name: Close pull requests
+
+# We don't accept pull requests (see CONTRIBUTING.md). This closes those from outside the team with a pointer to issues.
+# pull_request_target runs with this repository's token, so it must never check out or run the pull request's code.
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  close:
+    if: ${{ !contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) }}
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr close "$PR" --comment "Thank you for taking the time! We don't accept pull requests. Please open an issue instead (https://github.com/${{ github.repository }}/issues/new/choose), and we will write the change ourselves. [CONTRIBUTING.md](https://github.com/${{ github.repository }}/blob/main/CONTRIBUTING.md) explains why."

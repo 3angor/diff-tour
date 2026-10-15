@@ -340,6 +340,10 @@ go run ./cmd/tour tours/example-coupons.en.json --repo path/to/diff-tour-example
 
 `--dump` は、決まった画面の大きさで全部の手順を出力します。端末を使わずに見た目を確かめるときに便利です。[`demo/`](demo) には GIF を録るための台本が、[`experiments/generate`](experiments/generate) にはプロンプトを調整したときの記録があります。
 
+## 要望・不具合の報告
+
+要望や不具合の報告は、[Issue](https://github.com/init-co-jp/diff-tour/issues/new/choose) で気軽に送ってください。日本語でも英語でもかまいません。プルリクエストは受け付けていません。LLM に何を読ませ、何をさせるかを、どの変更でも同じように確かめるため、変更はこちらで書きます。詳しくは [CONTRIBUTING.md](CONTRIBUTING.md) をご覧ください。
+
 ## ライセンス
 
 [MIT](LICENSE)
