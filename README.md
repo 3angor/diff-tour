@@ -1,5 +1,9 @@
 # diff-tour
 
+> Russian localization fork: [Русская документация](README.ru.md), branch `feat/russian-localization`, based on upstream `v0.5.0`.
+> Use the source build instructions in that document; the upstream installers below do not install this fork.
+> Codex generation on Windows requires an explicit `TOUR_CODEX_WINDOWS_READ_ONLY=1` opt-in to whole-disk read-only access. See the documented Windows limitations before enabling it. Other platforms retain the original read profile.
+
 Walk through a diff the way a senior engineer reads it.
 
 **English** | [日本語](README.ja.md)
@@ -95,7 +99,7 @@ Sending your code to an LLM is a real decision, so here is exactly what happens.
 
 They go to the provider of that tool (Anthropic, OpenAI, Google or GitHub; with OpenCode, the provider of the model you use), under the terms of your account with them. `tour` itself makes no network requests, has no server, and collects no telemetry.
 
-**Not possible for the LLM:**
+**Not possible for the LLM with the original restricted read profile (Windows/Codex opt-in exception below):**
 
 - reading files outside the export directory, including your real working tree, `.git` and your home directory
 - reading files ignored by `.gitignore`, because they are never exported
@@ -123,9 +127,11 @@ Source: [`internal/generate/claude.go`](internal/generate/claude.go)
 </details>
 
 <details>
-<summary><b>Codex CLI</b>: a sandbox that can only read the export directory</summary>
+<summary><b>Codex CLI</b>: a read-only sandbox, with an explicit Windows compatibility mode</summary>
 
 Codex reads files by running commands such as `cat` and `rg`, so the protection is the sandbox those commands run in. `tour` defines its own permission profile on the command line. Commands may read the export directory and system paths such as `/usr` and `/etc`. Nothing is writable, and the network is off.
+
+In this fork, Codex generation on Windows refuses to start until `TOUR_CODEX_WINDOWS_READ_ONLY=1` is set. This opt-in uses the preconfigured `elevated` sandbox and allows reading the whole disk, including files outside the export directory. Writes and command networking remain disallowed. See [the Russian fork documentation](README.ru.md) for the tested limitations. This exception does not apply to other platforms or other model CLIs.
 
 - `--ignore-user-config` and `--ignore-rules` skip your `~/.codex` settings and rules, so your MCP servers and plugins are not loaded
 - `-c approval_policy="never"` makes blocked actions fail instead of asking
@@ -315,7 +321,7 @@ export TOUR_EDITOR='code -g {file}:{line}'
 
 If the file on disk differs from the commit being toured, `tour` opens a read-only copy from the cache instead, so you see the code the tour talks about.
 
-**Language.** English, Japanese, Simplified Chinese (`zh`), Traditional Chinese (`zh-Hant`, worded for Taiwan) and Spanish (`es`). The screens and the tours use it. `tour setup` changes it, and `tour --lang ja` changes it for one run. In Taiwan, Hong Kong and Macau, Traditional Chinese is picked from your locale.
+**Language.** English, Japanese, Simplified Chinese (`zh`), Traditional Chinese (`zh-Hant`, worded for Taiwan), Spanish (`es`) and Russian (`ru`). The screens and the tours use it. `tour setup` changes it, and `tour --lang ru` changes it for one run. In Taiwan, Hong Kong and Macau, Traditional Chinese is picked from your locale. This fork's CLI help is always Russian.
 
 ## FAQ
 

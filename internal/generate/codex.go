@@ -11,10 +11,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
-// Codex runs the OpenAI Codex CLI (codex exec) with a sandbox that can only read the working directory.
+// Codex runs the OpenAI Codex CLI (codex exec) with a read-only sandbox.
+// Windows whole-disk read access requires an explicit environment opt-in.
 type Codex struct {
 	Bin string
 }
@@ -23,6 +25,12 @@ func (c Codex) Name() string { return "Codex CLI" }
 
 // codexProfile is the name of the permissions profile defined on the command line.
 const codexProfile = "diff_tour_read"
+
+const codexWindowsReadOnlyEnv = "TOUR_CODEX_WINDOWS_READ_ONLY"
+
+func windowsCodexReadOnly() bool {
+	return runtime.GOOS == "windows" && os.Getenv(codexWindowsReadOnlyEnv) == "1"
+}
 
 // codexArgs are the flags for running read-only (checked against codex-cli 0.160.1).
 // Codex has no read-only tool set: it reads files by running shell commands (cat, sed, rg),
@@ -48,8 +56,16 @@ const codexProfile = "diff_tour_read"
 //
 // Verified on Linux (bubblewrap) only. Not enforceable from here: managed or system config (/etc/codex) still applies, and the model
 // can still be told what is in the files it reads (prompt injection), though it cannot act on it.
+// The explicit Windows compatibility opt-in below grants whole-disk read-only
+// access instead of the restricted read paths described above. See README.ru.md.
 func codexArgs(dir string, extraReadable []string) []string {
 	readable := []string{`":minimal"="read"`, `":workspace_roots"={"."="read"}`}
+	if windowsCodexReadOnly() {
+		// Whole-disk read-only access is explicitly enabled for this process.
+		// The elevated sandbox cannot enforce a split allow-list of read paths.
+		// No filesystem writes or command network access are granted.
+		readable = []string{`":root"="read"`}
+	}
 	for _, p := range extraReadable {
 		readable = append(readable, fmt.Sprintf("%q=%q", p, "read"))
 	}
@@ -62,6 +78,11 @@ func codexArgs(dir string, extraReadable []string) []string {
 		"-c", `approval_policy="never"`,
 		"-c", `web_search="disabled"`,
 		"-c", `history.persistence="none"`,
+	}
+	if windowsCodexReadOnly() {
+		// Ignoring user config also drops windows.sandbox. The unelevated
+		// implementation cannot enforce this split read-only profile.
+		args = append(args, "-c", `windows.sandbox="elevated"`)
 	}
 	for _, f := range []string{
 		"apps", "plugins", "remote_plugin", "multi_agent", "memories", "image_generation",
@@ -209,6 +230,9 @@ func readCodexStream(r io.Reader, dir string, events func(Event)) (codexStream, 
 }
 
 func (c Codex) Run(ctx context.Context, dir, prompt string, events func(Event)) (Result, error) {
+	if runtime.GOOS == "windows" && !windowsCodexReadOnly() {
+		return Result{}, fmt.Errorf("Codex on Windows requires explicit opt-in: set %s=1 to allow whole-disk read-only access; commands still cannot write files or access the network", codexWindowsReadOnlyEnv)
+	}
 	bin := c.Bin
 	if bin == "" {
 		bin = "codex"

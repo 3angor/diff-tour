@@ -1,23 +1,33 @@
 package generate
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
 )
 
 func TestCodexArgs(t *testing.T) {
+	t.Setenv(codexWindowsReadOnlyEnv, "1")
 	args := codexArgs("/w", []string{"/opt/codex/bin/codex"})
 	joined := strings.Join(args, " ")
+	filesystem := `permissions.diff_tour_read.filesystem={":minimal"="read", ":workspace_roots"={"."="read"}, "/opt/codex/bin/codex"="read"}`
+	if runtime.GOOS == "windows" {
+		filesystem = `permissions.diff_tour_read.filesystem={":root"="read", "/opt/codex/bin/codex"="read"}`
+		if !strings.Contains(joined, `windows.sandbox="elevated"`) {
+			t.Fatal("Windows must use the elevated read-only sandbox")
+		}
+	}
 	for _, want := range []string{
 		"exec --json",
 		"--ephemeral", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check",
 		"-C /w",
 		`default_permissions="diff_tour_read"`,
-		`permissions.diff_tour_read.filesystem={":minimal"="read", ":workspace_roots"={"."="read"}, "/opt/codex/bin/codex"="read"}`,
+		filesystem,
 		`approval_policy="never"`, `web_search="disabled"`, `history.persistence="none"`,
 		"--disable apps", "--disable plugins", "--disable multi_agent", "--disable memories",
 	} {
@@ -33,6 +43,33 @@ func TestCodexArgs(t *testing.T) {
 	}
 	if args[len(args)-1] != "-" {
 		t.Errorf("prompt should come from stdin, last arg = %q", args[len(args)-1])
+	}
+}
+
+func TestCodexWindowsReadOnlyOptIn(t *testing.T) {
+	for _, value := range []string{"", "0", "true", "1"} {
+		t.Run("value="+value, func(t *testing.T) {
+			t.Setenv(codexWindowsReadOnlyEnv, value)
+			args := strings.Join(codexArgs("/w", nil), " ")
+			want := runtime.GOOS == "windows" && value == "1"
+			if got := strings.Contains(args, `":root"="read"`); got != want {
+				t.Fatalf("whole-disk read = %v, want %v", got, want)
+			}
+			if got := strings.Contains(args, `windows.sandbox="elevated"`); got != want {
+				t.Fatalf("Windows compatibility sandbox = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestCodexWindowsRequiresExplicitOptIn(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific startup guard")
+	}
+	t.Setenv(codexWindowsReadOnlyEnv, "")
+	_, err := (Codex{Bin: "not-an-installed-command"}).Run(context.Background(), t.TempDir(), "test", func(Event) {})
+	if err == nil || !strings.Contains(err.Error(), codexWindowsReadOnlyEnv) || !strings.Contains(err.Error(), "whole-disk read-only") {
+		t.Fatalf("expected explicit whole-disk read opt-in error, got %v", err)
 	}
 }
 

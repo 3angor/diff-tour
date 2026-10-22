@@ -57,6 +57,7 @@ type Stats struct {
 }
 
 var languageRules = map[i18n.Lang]string{
+	i18n.RU:     "Write all tour text, headings, explanations, questions, answers, and diagram labels in natural Russian. Use short, clear sentences. Keep code identifiers, file names, commands, JSON keys, and enum values unchanged. Do not transliterate Russian text.",
 	i18n.EN:     "Write all text in English. Use short, plain sentences.",
 	i18n.JA:     "文章は日本語。です・ます調ではなく、短い常体（「〜している」「〜になる」）で書く。",
 	i18n.ZH:     "全部文字使用简体中文，用短句，表达直白。代码标识符、文件名、命令和通用技术术语保留原文。中文与英文、数字之间加空格。用中文全角标点，引号用“”，不用日文用词和「」。",

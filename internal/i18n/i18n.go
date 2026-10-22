@@ -16,13 +16,16 @@ const (
 	// ZHHant is Traditional Chinese, worded for readers in Taiwan (Hong Kong and Macau get it too).
 	ZHHant Lang = "zh-Hant"
 	ES     Lang = "es"
+	RU     Lang = "ru"
 )
 
 // Langs lists the supported languages. It is also the order of the choices.
-var Langs = []Lang{EN, JA, ZH, ZHHant, ES}
+var Langs = []Lang{EN, JA, ZH, ZHHant, ES, RU}
 
 func (l Lang) Name() string {
 	switch l {
+	case RU:
+		return "Русский"
 	case JA:
 		return "日本語"
 	case ZH:

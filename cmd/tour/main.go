@@ -2,6 +2,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -20,23 +21,22 @@ import (
 	"github.com/init-co-jp/diff-tour/internal/ui"
 )
 
-const usage = `usage:
-  tour                      choose a branch and tour it
-  tour <branch>             tour a branch, e.g. feature/x or origin/feature/x
-                            (compared with the default branch)
-  tour <commit>             tour a single commit
-  tour <base>..<head>       tour a range
-  tour <tour.json>          play a tour file
-  tour setup                choose the language and the LLM again
+const usage = `Запуск:
+  tour                      выбрать ветку для экскурсии
+  tour <branch>             экскурсия по ветке, например feature/x или origin/feature/x
+                            (сравнение с основной веткой)
+  tour <commit>             экскурсия по одному коммиту
+  tour <base>..<head>        экскурсия по диапазону коммитов
+  tour <tour.json>          открыть сохранённую экскурсию
+  tour setup                заново выбрать язык и модель
 
-options:
-  --repo <path>   repository to read (default: current directory)
-  --lang <lang>   language for this run only: en, ja, zh (Simplified Chinese),
-                  zh-Hant (Traditional Chinese) or es
-  --dump          print every step to stdout instead of opening the TUI
-  --cols, --rows  screen size for --dump (default 100x30)
-  --plain         --dump without colors
-  --version       print the version
+Параметры:
+  --repo <path>   путь к репозиторию (по умолчанию: текущая папка)
+  --lang <lang>   язык для этого запуска: en, ja, zh, zh-Hant, es, ru
+  --dump          вывести все шаги текстом
+  --cols, --rows  размер вывода для --dump (по умолчанию: 100x30)
+  --plain         вывод --dump без цветов
+  --version      показать версию
 `
 
 // version is set by the release build (-ldflags "-X main.version=...").
@@ -96,6 +96,9 @@ func run(args []string) error {
 	rows := fs.Int("rows", 30, "")
 	showVersion := fs.Bool("version", false, "")
 	positional, err := parse(fs, args)
+	if errors.Is(err, flag.ErrHelp) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}

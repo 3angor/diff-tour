@@ -104,7 +104,16 @@ func extract(repo *git.Repo, ref, dir string) error {
 			// Do not export symlinks and the like (so nothing outside the working directory can be read).
 		}
 	}
-	return wait()
+	// tar.Reader stops at the end marker, before git has written all padding.
+	// Drain the pipe before waiting: on Windows the remaining tar block can
+	// exceed the pipe buffer and leave git waiting forever for a reader.
+	_, drainErr := io.Copy(io.Discard, r)
+	r.Close()
+	waitErr := wait()
+	if drainErr != nil {
+		return drainErr
+	}
+	return waitErr
 }
 
 // copyWorktree exports the working-tree files that may be read (tracked ones and untracked ones that are not ignored).
